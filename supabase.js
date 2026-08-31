@@ -205,12 +205,38 @@ export const listarMovimentacoes = async instrumentoId =>
   ok(await sb.from('movimentacoes').select('*')
        .eq('instrumento_id', instrumentoId).order('data_saida', { ascending:false }));
 
+/* Datas de tela chegam como '2026-08-31' (dia local). O banco guarda
+   timestamptz, então converto o dia inteiro em UTC aqui — comparar uma
+   string solta faria o Postgres decidir o fuso por conta própria. */
+const iniDia = d => new Date(d + 'T00:00:00').toISOString();
+const fimDia = d => new Date(d + 'T23:59:59.999').toISOString();
+
+/**
+ * Histórico de empréstimos: entrega e devolução na mesma linha.
+ * @param {{de?:string, ate?:string, situacao?:''|'aberto'|'devolvido',
+ *          tipo?:string, instrumento_id?:string}} f
+ */
+export async function listarHistoricoEmprestimos(f = {}){
+  let q = sb.from('vw_emprestimos_historico').select('*');
+  if (f.de)  q = q.gte('data_saida', iniDia(f.de));
+  if (f.ate) q = q.lte('data_saida', fimDia(f.ate));
+  if (f.tipo) q = q.eq('tipo', f.tipo);
+  if (f.instrumento_id) q = q.eq('instrumento_id', f.instrumento_id);
+  if (f.situacao === 'aberto')    q = q.is('data_retorno', null);
+  if (f.situacao === 'devolvido') q = q.not('data_retorno', 'is', null);
+  return ok(await q.order('data_saida', { ascending:false }).limit(5000));
+}
+
 /** A trava de status vive no banco; aqui só repassamos. */
 export const registrarMovimentacao = async (instrumentoId, dados) =>
   ok(await sb.rpc('registrar_movimentacao', { p_instrumento_id: instrumentoId, p_dados: dados }));
 
-export const registrarDevolucao = async (movimentacaoId, obs) =>
-  ok(await sb.rpc('registrar_devolucao', { p_movimentacao_id: movimentacaoId, p_obs: obs || null }));
+export const registrarDevolucao = async (movimentacaoId, obs, recebidoPor) =>
+  ok(await sb.rpc('registrar_devolucao', {
+    p_movimentacao_id: movimentacaoId,
+    p_obs: obs || null,
+    p_recebido_por: recebidoPor || null
+  }));
 
 /* ===================================================================
    LINHA DO TEMPO E DOCUMENTOS

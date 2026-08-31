@@ -9,7 +9,7 @@
    Realtime nas duas pontas.
    ===================================================================== */
 import { esc, fmtData, fmtDT, toast, msgErro, debounce,
-         htmlCarregando, htmlVazio, lembrar, p2, animarNumero } from '../utils.js';
+         htmlCarregando, htmlVazio, lembrar, lembrado, p2, animarNumero } from '../utils.js';
 import { listarInstrumentos, listarEmprestimosAbertos, ouvir, cfgInt } from '../supabase.js';
 import { badge, legenda, textoVencimento, STATUS, ORDEM_GRAFICO } from '../components/status-badge.js';
 import { arcoSituacao, barrasVencimento, pareto } from '../components/graficos.js';
@@ -169,7 +169,7 @@ function graficos(d){
     const alvo = meses.find(x => x.ano === a && x.mes === m - 1);
     if (alvo) alvo.valor++;
   });
-  barrasVencimento(el.querySelector('#gMeses'), { meses });
+  barrasVencimento(el.querySelector('#gMeses'), { meses, totalAtivos: d.ativos.length });
 
   /* --- 3. Pareto por família ----------------------------------------- */
   const pendentes = [...d.descalibrados, ...d.proximos];
@@ -179,37 +179,66 @@ function graficos(d){
     if (!mapa.has(k)) mapa.set(k, { rotulo: i.familia_nome, sigla: i.familia_codigo, valor: 0 });
     mapa.get(k).valor++;
   });
-  pareto(el.querySelector('#gPareto'), { familias: [...mapa.values()] });
+  pareto(el.querySelector('#gPareto'), {
+    familias: [...mapa.values()], totalAtivos: d.ativos.length });
 }
 
 /* ==================================================================== */
+/* ---------------------------------------------------------------------
+   Cartão de lista que abre e fecha.
+
+   Com centenas de instrumentos, essas duas listas empurravam os
+   gráficos e os empréstimos para fora da tela. Fechadas por padrão, o
+   cabeçalho já entrega o número — que é a informação de fato — e a
+   lista completa fica a um clique. <details> nativo: teclado e leitor
+   de tela funcionam sem nenhum JS.
+   --------------------------------------------------------------------- */
+function cardLista({ id, icone, titulo, resumo, itens }){
+  const aberto = lembrado('painel.aberto.' + id, false);
+  return `
+    <details class="card" data-colapsavel="${esc(id)}" ${aberto ? 'open' : ''}>
+      <summary class="card-head">
+        <svg viewBox="0 0 24 24">${icone}</svg>
+        <h2>${esc(titulo)}</h2>
+        <span class="right">${itens.length}${resumo ? ' · ' + esc(resumo) : ''}</span>
+        <span class="chevron" aria-hidden="true">
+          <svg viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg></span>
+      </summary>
+      <div class="card-body tight">${listaInstrumentos(itens)}</div>
+    </details>`;
+}
+
 function listas({ alvo, descalibrados, proximos, emprestimos, janela }){
   const alertas  = emprestimos.filter(m => m.em_alerta);
   const externos = emprestimos.filter(m => m.tipo === 'externo');
 
+  const maisUrgente = proximos.length ? proximos[0].dias_para_vencer : null;
+
   alvo.innerHTML = `
     <div style="margin-bottom:16px">${legenda()}</div>
 
-    ${descalibrados.length ? `
-    <div class="card">
-      <div class="card-head">
-        <svg viewBox="0 0 24 24"><path d="M12 9v4m0 4h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg>
-        <h2>Descalibrados — ação imediata</h2><span class="right">${descalibrados.length}</span>
-      </div>
-      <div class="card-body tight">${listaInstrumentos(descalibrados)}</div>
-    </div>` : `
-    <div class="card"><div class="card-body">
-      <div class="warn-box g" style="margin:0">Nenhum instrumento descalibrado. O acervo está em dia.</div>
-    </div></div>`}
+    ${descalibrados.length
+      ? cardLista({
+          id:'descalibrados',
+          icone:'<path d="M12 9v4m0 4h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/>',
+          titulo:'Descalibrados — ação imediata',
+          itens: descalibrados
+        })
+      : `<div class="card"><div class="card-body">
+           <div class="warn-box g" style="margin:0">Nenhum instrumento descalibrado. O acervo está em dia.</div>
+         </div></div>`}
 
-    ${proximos.length ? `
-    <div class="card">
-      <div class="card-head">
-        <svg viewBox="0 0 24 24"><path d="M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20ZM12 6v6l4 2"/></svg>
-        <h2>Vencem nos próximos ${janela} dias</h2><span class="right">${proximos.length}</span>
-      </div>
-      <div class="card-body tight">${listaInstrumentos(proximos)}</div>
-    </div>` : ''}
+    ${proximos.length
+      ? cardLista({
+          id:'proximos',
+          icone:'<path d="M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20ZM12 6v6l4 2"/>',
+          titulo:`Vencem nos próximos ${janela} dias`,
+          resumo: maisUrgente != null
+            ? (maisUrgente <= 0 ? 'o primeiro vence hoje' : `o primeiro em ${maisUrgente} d`)
+            : '',
+          itens: proximos
+        })
+      : ''}
 
     <div class="card">
       <div class="card-head">
@@ -246,6 +275,11 @@ function listas({ alvo, descalibrados, proximos, emprestimos, janela }){
 
   alvo.querySelectorAll('[data-instr]').forEach(b =>
     b.addEventListener('click', () => irPara('calibracao', b.dataset.instr)));
+
+  // O Realtime repinta esta área sozinho. Sem guardar o estado, a lista
+  // que o usuário acabou de abrir fecharia na cara dele.
+  alvo.querySelectorAll('[data-colapsavel]').forEach(d =>
+    d.addEventListener('toggle', () => lembrar('painel.aberto.' + d.dataset.colapsavel, d.open)));
 }
 
 function listaInstrumentos(lista){

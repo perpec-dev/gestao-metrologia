@@ -164,8 +164,10 @@ create table if not exists public.movimentacoes (
   data_saida             timestamptz not null default now(),
   data_prevista_retorno  timestamptz,
   data_retorno           timestamptz,       -- NULL = ainda emprestado
+  recebido_por           text,              -- quem da Metrologia recebeu de volta
   obs_devolucao          text,
-  criado_por_email       text,
+  criado_por_email       text,              -- quem registrou a SAÍDA
+  devolvido_por_email    text,              -- quem registrou a DEVOLUÇÃO
   criado_em              timestamptz not null default now(),
   -- Regra 5: posse e externo não existem sem termo assinado.
   constraint termo_obrigatorio check (tipo = 'casual' or coalesce(btrim(termo_path),'') <> '')

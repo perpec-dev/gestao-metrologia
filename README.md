@@ -43,6 +43,11 @@ No **SQL Editor**, rode os arquivos **nesta ordem**, um de cada vez:
 | 4 | `sql/04_seed.sql` | Configurações obrigatórias e famílias iniciais |
 | 5 | `sql/05_admin.sql` | Gestão de perfis, apagamento em massa, receitas de manutenção |
 
+`sql/06_emprestimos_historico.sql` é **migração**, não instalação: serve para bancos
+que já estavam rodando antes do histórico de empréstimos existir. Numa instalação
+nova, os arquivos 01 e 03 já entregam tudo — pule o 06. Se o seu banco já estava
+de pé, rode nesta ordem: **06 → 02 → 03**.
+
 **Confirme antes de avançar** para o frontend:
 
 ```sql
@@ -135,6 +140,7 @@ $txt   = 'window.LOGO_B64 = "data:image/png;base64,' + $b64 + '";'
 │   ├── timeline.js         linha do tempo do instrumento
 │   └── form-instrumento.js formulário compartilhado (recebimento + avulso)
 ├── /sql/                   01_schema · 02_rls · 03_views · 04_seed · 05_admin
+│                           06_emprestimos_historico (migração)
 └── logo.js                 logo em base64
 ```
 
@@ -283,7 +289,14 @@ vivo: quando o outro usuário registra uma calibração, a linha pisca aqui.
 **Empréstimo.** Busque por tag ou descrição. Se o instrumento não puder sair, a
 tela diz o motivo antes de você preencher qualquer campo. Casual não pede termo;
 posse e externo não salvam sem ele. A aba **Em aberto** lista o que está fora e
-registra devolução.
+registra devolução — que exige informar **quem recebeu**, fechando o par da entrega.
+
+A aba **Histórico** guarda todas as saídas e devoluções já registradas, com filtro
+por período, tipo, situação (devolvidos, em aberto, fora do prazo) e busca livre.
+Exporta para Excel e para PDF, e o PDF carrega no cabeçalho o recorte aplicado.
+Nada é apagado quando o instrumento volta: a devolução preenche a mesma linha da
+saída, então o par entrega/devolução é sempre íntegro. Devolução só acontece pela
+RPC `registrar_devolucao` — não há `UPDATE` direto em `movimentacoes` pela API.
 
 **Inventário.** O acervo inteiro, com condição física. Inativar abre um modal com
 motivo e justificativa obrigatórios — os dois vão para a auditoria.

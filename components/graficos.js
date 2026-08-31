@@ -90,6 +90,9 @@ export function arcoSituacao(el, { segmentos, total, rotuloCentro = 'ativos' }){
   const L = 340, A = 196, cx = L/2, cy = 168;
   const rC = 112, espessura = 30;      // rC = raio da linha de centro do anel
   const soma = segmentos.reduce((s, d) => s + d.valor, 0) || 1;
+  // A porcentagem é sempre sobre o acervo ativo — a mesma base dos três
+  // gráficos, para que os números possam ser comparados entre eles.
+  const base = total || soma;
 
   // Vão de 2px entre segmentos, convertido para graus no raio de centro.
   const vaoGrau = (2 / rC) * (180 / Math.PI);
@@ -100,7 +103,8 @@ export function arcoSituacao(el, { segmentos, total, rotuloCentro = 'ativos' }){
   let ang = 180, marcas = '', i = 0;
   for (const d of usaveis){
     const larg = (d.valor / soma) * disponivel;
-    const dica = `${esc(d.rotulo)}<span class="l2">${nfmt(d.valor)} · ${pct(d.valor, soma)}% do acervo</span>`;
+    const dica = `${esc(d.rotulo)}: ${pct(d.valor, base)}%` +
+                 `<span class="l2">${nfmt(d.valor)} de ${nfmt(base)} instrumentos ativos</span>`;
     // pathLength="100" normaliza o traço: o mesmo keyframe desenha
     // qualquer arco, de qualquer tamanho, no mesmo tempo.
     marcas += `<path class="g-marca g-traco" d="${arco(cx, cy, rC, ang, ang + larg)}"
@@ -133,8 +137,8 @@ export function arcoSituacao(el, { segmentos, total, rotuloCentro = 'ativos' }){
          <text class="g-hero-sub" x="${cx}" y="${cy + 6}" text-anchor="middle">${esc(rotuloCentro)}</text>
        </svg>
        <div class="g-legenda colunas">${legenda}</div>
-       ${tabelaGemea(['Situação','Instrumentos','%'],
-          segmentos.map(d => [d.rotulo, nfmt(d.valor), pct(d.valor, soma) + '%']))}
+       ${tabelaGemea(['Situação','Instrumentos','% do ativo'],
+          segmentos.map(d => [d.rotulo, nfmt(d.valor), pct(d.valor, base) + '%']))}
      </div>`);
 
   animarNumero(el.querySelector('.g-hero'), total, 720);
@@ -146,7 +150,7 @@ export function arcoSituacao(el, { segmentos, total, rotuloCentro = 'ativos' }){
    Série única: uma cor só. Colorir cada barra de um tom diferente
    duplicaria a informação que a altura já dá.
    ===================================================================== */
-export function barrasVencimento(el, { meses }){
+export function barrasVencimento(el, { meses, totalAtivos = 0 }){
   const L = 360, A = 200;
   const mE = 8, mD = 8, mT = 22, mB = 34;
   const larguraPlot = L - mE - mD, alturaPlot = A - mT - mB;
@@ -169,7 +173,8 @@ export function barrasVencimento(el, { meses }){
     const alt = (m.valor / teto) * alturaPlot;
     const x = mE + faixa * i + (faixa - larguraBarra) / 2;
     const y = mT + alturaPlot - alt;
-    const dica = `${esc(m.rotuloLongo || m.rotulo)}<span class="l2">${nfmt(m.valor)} instrumento(s) a calibrar</span>`;
+    const dica = `${esc(m.rotuloLongo || m.rotulo)}: ${pct(m.valor, totalAtivos)}%` +
+                 `<span class="l2">${nfmt(m.valor)} a calibrar, de ${nfmt(totalAtivos)} instrumentos ativos</span>`;
     return `
       <g data-dica="${dica}">
         <rect class="g-alvo" x="${mE + faixa*i}" y="${mT}" width="${faixa}" height="${alturaPlot}"/>
@@ -191,7 +196,8 @@ export function barrasVencimento(el, { meses }){
        <svg viewBox="0 0 ${L} ${A}" role="img" aria-label="Instrumentos a vencer por mês">
          ${grade}${barras}
        </svg>
-       ${tabelaGemea(['Mês','A calibrar'], meses.map(m => [m.rotuloLongo || m.rotulo, nfmt(m.valor)]))}
+       ${tabelaGemea(['Mês','A calibrar','% do ativo'],
+          meses.map(m => [m.rotuloLongo || m.rotulo, nfmt(m.valor), pct(m.valor, totalAtivos) + '%']))}
      </div>`);
 
   ligarDica(el.querySelector('.grafico'));
@@ -205,7 +211,7 @@ export function barrasVencimento(el, { meses }){
    rótulo, não como segundo eixo — duas escalas num gráfico inventam
    uma correlação que não existe no dado.
    ===================================================================== */
-export function pareto(el, { familias }){
+export function pareto(el, { familias, totalAtivos = 0 }){
   const dados = familias.filter(f => f.valor > 0).sort((a,b) => b.valor - a.valor).slice(0, 8);
   const total = dados.reduce((s,f) => s + f.valor, 0);
 
@@ -231,7 +237,8 @@ export function pareto(el, { familias }){
     pontos.push({ x: cx, y: yDe(acumulado), acc: acumulado, f });
     const alt = (f.valor / total) * alturaPlot;
     const x = cx - larguraBarra / 2;
-    const dica = `${esc(f.rotulo)}<span class="l2">${nfmt(f.valor)} pendente(s) · ${pct(acumulado,total)}% acumulado</span>`;
+    const dica = `${esc(f.rotulo)}: ${pct(f.valor, totalAtivos)}% do acervo ativo` +
+                 `<span class="l2">${nfmt(f.valor)} pendente(s) · ${pct(acumulado, total)}% do total de pendências, acumulado</span>`;
     return `
       <g data-dica="${dica}">
         <rect class="g-alvo" x="${mE + faixa*i}" y="${mT}" width="${faixa}" height="${alturaPlot}"/>
@@ -268,8 +275,9 @@ export function pareto(el, { familias }){
          <div class="item"><span class="sw" style="background:var(--serie)"></span>Pendências da família</div>
          <div class="item"><span class="sw linha" style="background:var(--serie-2)"></span>Acumulado</div>
        </div>
-       ${tabelaGemea(['Família','Pendentes','Acumulado','% acumulado'],
-          pontos.map(p => [p.f.rotulo, nfmt(p.f.valor), nfmt(p.acc), pct(p.acc,total)+'%']))}
+       ${tabelaGemea(['Família','Pendentes','% do ativo','Acumulado','% acumulado'],
+          pontos.map(p => [p.f.rotulo, nfmt(p.f.valor), pct(p.f.valor, totalAtivos)+'%',
+                           nfmt(p.acc), pct(p.acc, total)+'%']))}
      </div>`);
 
   ligarDica(el.querySelector('.grafico'));

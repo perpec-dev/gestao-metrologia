@@ -217,6 +217,21 @@ a:hover{text-decoration:underline}
 .card-body{padding:1.4rem}
 .card-body.tight{padding:1rem 1.1rem}
 
+/* Cartão que abre e fecha. <details> nativo: teclado e leitor de tela
+   já funcionam, sem uma linha de JS para o comportamento. */
+details.card > summary{cursor:pointer;list-style:none;user-select:none;
+                       border-bottom:1px solid transparent;transition:background .14s}
+details.card > summary::-webkit-details-marker{display:none}
+details.card > summary:hover{background:var(--surface2)}
+details.card[open] > summary{border-bottom-color:var(--hair)}
+.card-head .chevron{display:flex;align-items:center;margin-left:10px;flex-shrink:0}
+.card-head .chevron svg{width:16px;height:16px;stroke:var(--muted);stroke-width:2.2;
+                        transition:transform .22s var(--mola)}
+details.card[open] .chevron svg{transform:rotate(180deg);stroke:var(--red)}
+@media (prefers-reduced-motion: no-preference){
+  details.card[open] > .card-body{animation:entra .24s var(--saida)}
+}
+
 .g2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
 .g3{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
 .g4{display:grid;grid-template-columns:repeat(4,1fr);gap:16px}

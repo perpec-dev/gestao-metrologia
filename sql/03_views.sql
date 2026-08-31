@@ -66,9 +66,21 @@ alter view public.vw_instrumentos_status set (security_invoker = on);
 -- ---------------------------------------------------------------------
 -- 2. EMPRÉSTIMOS EM ABERTO  (lembretes do painel)
 -- ---------------------------------------------------------------------
+-- O `drop` é necessário uma única vez: a versão anterior desta view usava
+-- `m.*` e ficou com as colunas em outra ordem. `create or replace` recusa
+-- renomear coluna de view. Nada depende dela além da tela de empréstimo.
+drop view if exists public.vw_emprestimos_abertos;
+
+-- Colunas listadas uma a uma, e não `m.*`, de propósito: com `*` o
+-- PostgreSQL congela a expansão no momento da criação, e qualquer coluna
+-- nova em `movimentacoes` entraria no meio da lista — o que faz o
+-- `create or replace` desta view falhar na próxima vez que o arquivo rodar.
 create or replace view public.vw_emprestimos_abertos as
 select
-  m.*,
+  m.id, m.instrumento_id, m.tipo, m.entregue_por, m.responsavel, m.setor,
+  m.termo_path, m.data_saida, m.data_prevista_retorno, m.data_retorno,
+  m.recebido_por, m.obs_devolucao, m.criado_por_email, m.devolvido_por_email,
+  m.criado_em,
   i.tag,
   i.descricao,
   f.nome as familia_nome,
@@ -91,6 +103,37 @@ join public.familias f on f.id = i.familia_id
 where m.data_retorno is null;
 
 alter view public.vw_emprestimos_abertos set (security_invoker = on);
+
+-- ---------------------------------------------------------------------
+-- 2b. HISTÓRICO DE EMPRÉSTIMOS  (entrega e devolução, abertos e fechados)
+--
+-- Nenhuma linha de `movimentacoes` é apagada ou reaproveitada: a devolução
+-- é um UPDATE que preenche data_retorno na MESMA linha da saída. Logo o
+-- par entrega/devolução já é o registro histórico — esta view só o torna
+-- legível (tag, descrição, duração, atraso) sem exigir join na tela.
+-- ---------------------------------------------------------------------
+create or replace view public.vw_emprestimos_historico as
+select
+  m.id, m.instrumento_id, m.tipo,
+  m.entregue_por, m.responsavel, m.setor, m.termo_path,
+  m.data_saida, m.data_prevista_retorno, m.data_retorno,
+  m.recebido_por, m.obs_devolucao,
+  m.criado_por_email, m.devolvido_por_email, m.criado_em,
+  i.tag, i.descricao, i.num_serie, i.condicao_fisica,
+  f.codigo as familia_codigo,
+  f.nome   as familia_nome,
+  (m.data_retorno is null) as em_aberto,
+  -- Empréstimo aberto: dias fora até hoje. Fechado: duração real.
+  (coalesce(m.data_retorno::date, current_date) - m.data_saida::date) as dias_fora,
+  case
+    when m.data_prevista_retorno is null then false
+    else coalesce(m.data_retorno, now()) > m.data_prevista_retorno
+  end as fora_do_prazo
+from public.movimentacoes m
+join public.instrumentos i on i.id = m.instrumento_id
+join public.familias f     on f.id = i.familia_id;
+
+alter view public.vw_emprestimos_historico set (security_invoker = on);
 
 -- ---------------------------------------------------------------------
 -- 3. LINHA DO TEMPO  (um instrumento, todos os eventos)
@@ -125,8 +168,11 @@ union all
 union all
   select m.instrumento_id, m.data_retorno, 'retorno',
          'Devolução por ' || m.responsavel,
-         nullif(m.obs_devolucao,''),
-         null, null, m.criado_por_email
+         concat_ws(' · ',
+           case when nullif(btrim(coalesce(m.recebido_por,'')),'') is not null
+                then 'Recebido por: ' || m.recebido_por end,
+           nullif(m.obs_devolucao,'')),
+         null, null, coalesce(m.devolvido_por_email, m.criado_por_email)
     from public.movimentacoes m where m.data_retorno is not null
 union all
   select a.entidade_id, a.criado_em, 'auditoria',
@@ -219,14 +265,24 @@ begin
   return v_row;
 end $$;
 
+-- A assinatura ganhou p_recebido_por. Duas versões coexistindo deixariam
+-- o PostgREST com chamada ambígua, por isso a antiga sai antes.
+drop function if exists public.registrar_devolucao(uuid, text);
+
 create or replace function public.registrar_devolucao(
   p_movimentacao_id uuid,
-  p_obs text default null
+  p_obs text default null,
+  p_recebido_por text default null
 ) returns void language plpgsql security definer set search_path = public as $$
 begin
   if not public.sou_ativo() then raise exception 'Usuário sem permissão.'; end if;
+  -- UPDATE na própria linha da saída: entrega e devolução são o mesmo
+  -- registro, e é isso que mantém o par sempre íntegro no histórico.
   update public.movimentacoes
-     set data_retorno = now(), obs_devolucao = nullif(btrim(coalesce(p_obs,'')),'')
+     set data_retorno        = now(),
+         obs_devolucao       = nullif(btrim(coalesce(p_obs,'')),''),
+         recebido_por        = nullif(btrim(coalesce(p_recebido_por,'')),''),
+         devolvido_por_email = public.meu_email()
    where id = p_movimentacao_id and data_retorno is null;
   if not found then raise exception 'Movimentação não encontrada ou já devolvida.'; end if;
 end $$;
@@ -235,14 +291,16 @@ end $$;
 -- 5. PERMISSÕES DAS VIEWS E DAS RPCs DESTE ARQUIVO
 -- ---------------------------------------------------------------------
 revoke all on public.vw_instrumentos_status, public.vw_emprestimos_abertos,
-              public.vw_timeline from anon, authenticated;
+              public.vw_emprestimos_historico, public.vw_timeline
+         from anon, authenticated;
 
-grant select on public.vw_instrumentos_status  to authenticated;
-grant select on public.vw_emprestimos_abertos  to authenticated;
-grant select on public.vw_timeline             to authenticated;
+grant select on public.vw_instrumentos_status    to authenticated;
+grant select on public.vw_emprestimos_abertos    to authenticated;
+grant select on public.vw_emprestimos_historico  to authenticated;
+grant select on public.vw_timeline               to authenticated;
 
-grant execute on function public.registrar_movimentacao(uuid,jsonb) to authenticated;
-grant execute on function public.registrar_devolucao(uuid,text)     to authenticated;
+grant execute on function public.registrar_movimentacao(uuid,jsonb)     to authenticated;
+grant execute on function public.registrar_devolucao(uuid,text,text)    to authenticated;
 
 -- =====================================================================
 -- DIAGNÓSTICO — descomente quando algo não bate

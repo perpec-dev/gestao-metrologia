@@ -7,22 +7,36 @@
 
    Regra 5: posse e externo não salvam sem o termo de responsabilidade.
    ===================================================================== */
-import { esc, fmtDT, fmtData, chave, toast, msgErro, debounce, htmlVazio,
-         htmlCarregando, validador, limparErros, delegar } from '../utils.js';
+import { esc, fmtDT, fmtData, hojeISO, p2, slug, chave, toast, msgErro, debounce,
+         htmlVazio, htmlCarregando, validador, limparErros, delegar,
+         lerXLSX, lerPDFMake, baixarBlob } from '../utils.js';
 import { listarInstrumentos, listarEmprestimosAbertos, registrarMovimentacao,
-         registrarDevolucao, enviarArquivo, cfgLista, ouvir, abrirArquivo } from '../supabase.js';
+         registrarDevolucao, listarHistoricoEmprestimos, enviarArquivo,
+         cfgLista, ouvir, abrirArquivo } from '../supabase.js';
 import { CONFIG } from '../config.js';
 import { badge, PODE_EMPRESTAR } from '../components/status-badge.js';
 import { abrirModal } from '../components/modal.js';
+import { criarTabela } from '../components/tabela.js';
+import { meuNome } from '../auth.js';
 
 let desligarRealtime = null;
 let instrumentos = [];
 let escolhido = null;
 let raiz = null;
 
+/* Histórico: resultado da última consulta e o recorte que a gerou.
+   O recorte é congelado no momento de consultar, não lido do formulário
+   na hora de exportar — entre uma coisa e outra o usuário pode ter mexido
+   nos filtros sem clicar em Consultar. */
+let historico = [];
+let histConsultado = false;   // consulta vazia também conta: não repetir
+let tabelaHist = null;
+let descHist = { titulo:'Histórico de empréstimos', linha:'' };
+
 export function destroy(){
   if (desligarRealtime){ desligarRealtime(); desligarRealtime = null; }
   instrumentos = []; escolhido = null; raiz = null;
+  historico = []; histConsultado = false; tabelaHist = null;
 }
 
 /* ==================================================================== */
@@ -34,6 +48,7 @@ export async function render(container, params = []){
     <div class="subtabs">
       <button class="subtab sel" data-pane="saida">Nova saída</button>
       <button class="subtab" data-pane="abertos">Em aberto</button>
+      <button class="subtab" data-pane="historico">Histórico</button>
     </div>
 
     <section class="pane on" id="pane-saida">
@@ -114,21 +129,86 @@ export async function render(container, params = []){
 
     <section class="pane" id="pane-abertos">
       <div id="listaAbertos">${htmlCarregando()}</div>
+    </section>
+
+    <section class="pane" id="pane-historico">
+      <div class="card">
+        <div class="card-head"><h2>Filtros do histórico</h2></div>
+        <div class="card-body">
+          <div class="g4">
+            <div class="field">
+              <label for="hDe">Saída — de</label>
+              <input type="date" id="hDe">
+            </div>
+            <div class="field">
+              <label for="hAte">Saída — até</label>
+              <input type="date" id="hAte">
+            </div>
+            <div class="field">
+              <label for="hSituacao">Situação</label>
+              <select id="hSituacao">
+                <option value="">Todos os registros</option>
+                <option value="devolvido">Devolvidos</option>
+                <option value="aberto">Ainda em aberto</option>
+                <option value="atraso">Fora do prazo previsto</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="hTipo">Tipo</label>
+              <select id="hTipo">
+                <option value="">Todos</option>
+                <option value="casual">Casual</option>
+                <option value="posse">Posse</option>
+                <option value="externo">Externo</option>
+              </select>
+            </div>
+          </div>
+          <div class="field" style="margin-top:14px;max-width:460px">
+            <label for="hBusca">Buscar</label>
+            <input type="text" id="hBusca" placeholder="Tag, instrumento, responsável ou setor">
+            <div class="hint">Filtra o resultado já consultado, sem ir ao servidor.</div>
+          </div>
+          <div style="margin-top:14px;display:flex;gap:9px;flex-wrap:wrap">
+            <button class="btn btn-outline btn-sm" data-hat="30">Últimos 30 dias</button>
+            <button class="btn btn-outline btn-sm" data-hat="ano">Este ano</button>
+            <button class="btn btn-outline btn-sm" data-hat="limpar">Todo o período</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="act-bar">
+        <div id="hResumo" style="font-size:13px;color:var(--muted)">Nenhuma consulta feita ainda.</div>
+        <div class="act-group">
+          <button class="btn btn-outline" id="btHExcel" disabled>Exportar para Excel</button>
+          <button class="btn btn-outline" id="btHPDF" disabled>Exportar para PDF</button>
+          <button class="btn btn-red" id="btHGerar" style="min-width:180px">CONSULTAR</button>
+        </div>
+      </div>
+
+      <div id="hLista">${htmlVazio('Escolha o período e clique em "Consultar".')}</div>
     </section>`;
 
   container.querySelectorAll('.subtab').forEach(b => b.addEventListener('click', () => {
     container.querySelectorAll('.subtab').forEach(x => x.classList.toggle('sel', x === b));
     container.querySelectorAll('.pane').forEach(p => p.classList.toggle('on', p.id === 'pane-'+b.dataset.pane));
     if (b.dataset.pane === 'abertos') carregarAbertos();
+    // O histórico só vai ao servidor quando alguém pede: é a consulta
+    // mais pesada da tela e ninguém abre a aba sem querer olhar.
+    if (b.dataset.pane === 'historico' && !histConsultado) consultarHistorico();
   }));
 
   instrumentos = await listarInstrumentos();
   ligarAutocomplete(container);
   ligarFormulario(container);
+  ligarHistorico(container);
   carregarAbertos();
 
   desligarRealtime = ouvir('tela-emprestimo', ['instrumentos','movimentacoes'],
-    debounce(async () => { instrumentos = await listarInstrumentos(); carregarAbertos(); }, 800));
+    debounce(async () => {
+      instrumentos = await listarInstrumentos();
+      carregarAbertos();
+      if (histConsultado) consultarHistorico();
+    }, 800));
 
   if (params[0]){
     const i = instrumentos.find(x => x.id === params[0]);
@@ -330,6 +410,7 @@ async function carregarAbertos(){
               <div><div class="k">Tipo</div><div class="v">${esc(m.tipo)}</div></div>
               <div><div class="k">Responsável</div><div class="v">${esc(m.responsavel)}</div></div>
               <div><div class="k">Setor</div><div class="v">${esc(m.setor)}</div></div>
+              <div><div class="k">Entregue por</div><div class="v">${esc(m.entregue_por || '—')}</div></div>
               <div><div class="k">Saída</div><div class="v">${esc(fmtDT(m.data_saida))}</div></div>
               <div><div class="k">Fora há</div><div class="v" style="color:${m.em_alerta ? 'var(--status-descalibrado)' : 'inherit'}">
                 ${esc(m.dias_fora)} dia(s)${m.prazo_alerta_dias ? ' · alerta em '+esc(m.prazo_alerta_dias) : ''}</div></div>
@@ -361,6 +442,12 @@ function modalDevolucao(movId, tag){
     corpo: `
       <p style="font-size:14px;margin-bottom:12px">Confirme a devolução do instrumento
         <b>${esc(tag)}</b>. A data e a hora do retorno são as de agora.</p>
+      <div class="field" id="wRecebido">
+        <label for="fRecebido">Recebido por<span class="req">*</span></label>
+        <input type="text" id="fRecebido" placeholder="Quem da Metrologia está recebendo">
+        <div class="hint">Fecha o par da entrega: fica no histórico e no PDF.</div>
+        <div class="msg" id="mRecebido"></div>
+      </div>
       <div class="field">
         <label for="fObsDev">Observação da devolução</label>
         <textarea id="fObsDev" placeholder="Estado do instrumento na volta, avarias, etc."></textarea>
@@ -368,13 +455,19 @@ function modalDevolucao(movId, tag){
     acoes: [
       { rotulo:'Cancelar', classe:'btn-outline', onClick: f => f() },
       { rotulo:'Confirmar devolução', classe:'btn-green', onClick: async (fechar, bt) => {
+          const recebido = document.getElementById('fRecebido').value.trim();
+          const val = validador();
+          val.exigir('Recebido', recebido, 'Informe quem está recebendo o instrumento.');
+          if (!val.encerrar()) return;
+
           bt.disabled = true; bt.textContent = 'Salvando…';
           try {
-            await registrarDevolucao(movId, document.getElementById('fObsDev').value.trim());
+            await registrarDevolucao(movId, document.getElementById('fObsDev').value.trim(), recebido);
             fechar();
             toast(`Devolução de ${tag} registrada.`, 'success');
             instrumentos = await listarInstrumentos();
             carregarAbertos();
+            if (historico.length) consultarHistorico();
           } catch (e){
             toast(msgErro(e), 'error');
             bt.disabled = false; bt.textContent = 'Confirmar devolução';
@@ -382,4 +475,298 @@ function modalDevolucao(movId, tag){
       } }
     ]
   });
+}
+
+/* ==================================================================== */
+/* HISTÓRICO — entrega e devolução, com exportação                      */
+/*                                                                      */
+/* Nada é apagado quando o instrumento volta: a devolução preenche a    */
+/* mesma linha da saída. O histórico é, portanto, a própria tabela de   */
+/* movimentações — aqui só damos filtro, leitura e papel timbrado.      */
+/* ==================================================================== */
+function ligarHistorico(container){
+  container.querySelector('#btHGerar').addEventListener('click', () => consultarHistorico());
+  container.querySelector('#btHExcel').addEventListener('click', () => exportarHistExcel(container));
+  container.querySelector('#btHPDF').addEventListener('click',   () => exportarHistPDF(container));
+
+  container.querySelector('#hBusca').addEventListener('input',
+    debounce(() => pintarHistorico(), 200));
+
+  container.querySelectorAll('[data-hat]').forEach(b => b.addEventListener('click', () => {
+    const de = container.querySelector('#hDe'), ate = container.querySelector('#hAte');
+    const hoje = new Date();
+    const iso = d => d.getFullYear()+'-'+p2(d.getMonth()+1)+'-'+p2(d.getDate());
+
+    if (b.dataset.hat === '30'){
+      de.value = iso(new Date(hoje.getTime() - 30*86400000));
+      ate.value = '';
+    } else if (b.dataset.hat === 'ano'){
+      de.value = hoje.getFullYear()+'-01-01';
+      ate.value = '';
+    } else {
+      de.value = ''; ate.value = '';
+    }
+    consultarHistorico();
+  }));
+
+  // Um listener só, no container: a tabela se repinta a cada ordenação.
+  delegar(container.querySelector('#hLista'), 'click', '[data-termo]', async (e, b) => {
+    try { await abrirArquivo(CONFIG.BUCKETS.termos, b.dataset.termo); }
+    catch (err){ toast(msgErro(err), 'error'); }
+  });
+}
+
+const TIPO_ROTULO = { casual:'Casual', posse:'Posse', externo:'Externo' };
+
+/** Descrição legível do recorte — vai para a tela, o PDF e o nome do arquivo. */
+function descreverHistorico(f){
+  const partes = [];
+  if (f.de && f.ate)  partes.push(`Saídas de ${fmtData(f.de)} a ${fmtData(f.ate)}`);
+  else if (f.de)      partes.push(`Saídas a partir de ${fmtData(f.de)}`);
+  else if (f.ate)     partes.push(`Saídas até ${fmtData(f.ate)}`);
+  else                partes.push('Todo o período');
+
+  partes.push('Situação: ' + ({
+    devolvido:'devolvidos', aberto:'ainda em aberto', atraso:'fora do prazo previsto'
+  }[f.situacao] || 'todas'));
+
+  if (f.tipo) partes.push('Tipo: ' + (TIPO_ROTULO[f.tipo] || f.tipo));
+  if (f.busca) partes.push(`Busca: "${f.busca}"`);
+
+  let titulo = 'Histórico de empréstimos';
+  if (f.situacao === 'aberto')    titulo = 'Empréstimos em aberto';
+  if (f.situacao === 'devolvido') titulo = 'Empréstimos devolvidos';
+  if (f.situacao === 'atraso')    titulo = 'Empréstimos fora do prazo';
+  if (f.tipo) titulo += ' · ' + (TIPO_ROTULO[f.tipo] || f.tipo);
+
+  return { titulo, linha: partes.join('  ·  ') };
+}
+
+function filtrosHistorico(){
+  const v = id => raiz.querySelector('#'+id).value || '';
+  return { de:v('hDe'), ate:v('hAte'), situacao:v('hSituacao'),
+           tipo:v('hTipo'), busca:v('hBusca').trim() };
+}
+
+async function consultarHistorico(){
+  if (!raiz) return;
+  const alvo = raiz.querySelector('#hLista');
+  if (!alvo) return;
+
+  const f = filtrosHistorico();
+  alvo.innerHTML = htmlCarregando('Consultando o histórico…');
+  tabelaHist = null;
+
+  try {
+    // 'atraso' não é filtro de banco: a view calcula fora_do_prazo, então
+    // trazemos tudo do período e recortamos aqui.
+    historico = await listarHistoricoEmprestimos({
+      de: f.de || null, ate: f.ate || null, tipo: f.tipo || null,
+      situacao: f.situacao === 'atraso' ? '' : f.situacao
+    });
+  } catch (e){
+    historico = [];
+    alvo.innerHTML = `<div class="warn-box e">${esc(msgErro(e))}</div>`;
+    return;
+  }
+  histConsultado = true;
+  descHist = descreverHistorico(f);
+  pintarHistorico();
+}
+
+/** Aplica os filtros que moram no cliente e repinta tabela e resumo. */
+function pintarHistorico(){
+  if (!raiz || !histConsultado) return;
+  const alvo = raiz.querySelector('#hLista');
+  if (!alvo) return;
+
+  const f = filtrosHistorico();
+  let linhas = historico;
+  if (f.situacao === 'atraso') linhas = linhas.filter(m => m.fora_do_prazo);
+  if (f.busca){
+    const t = chave(f.busca);
+    linhas = linhas.filter(m => chave(
+      [m.tag, m.descricao, m.responsavel, m.setor, m.entregue_por, m.recebido_por]
+        .filter(Boolean).join(' ')).includes(t));
+  }
+  descHist = descreverHistorico(f);
+
+  const devolvidos = linhas.filter(m => !m.em_aberto);
+  const media = devolvidos.length
+    ? Math.round(devolvidos.reduce((s,m) => s + (m.dias_fora||0), 0) / devolvidos.length)
+    : null;
+
+  raiz.querySelector('#hResumo').innerHTML = `
+    <b style="color:var(--text)">${esc(descHist.titulo)}</b><br>
+    <span style="font-size:12px">${esc(descHist.linha)}</span><br>
+    <span style="font-size:12px">${linhas.length} registro(s) ·
+      ${devolvidos.length} devolvido(s) ·
+      ${linhas.length - devolvidos.length} em aberto ·
+      ${linhas.filter(m => m.fora_do_prazo).length} fora do prazo${
+      media != null ? ' · média de '+media+' dia(s) fora' : ''}</span>`;
+
+  raiz.querySelector('#btHExcel').disabled = !linhas.length;
+  raiz.querySelector('#btHPDF').disabled   = !linhas.length;
+
+  tabelaHist = criarTabela(alvo, {
+    linhas,
+    ordem: { chave:'data_saida', dir:-1 },
+    vazio: 'Nenhum empréstimo atende a esses filtros.',
+    classeLinha: m => m.fora_do_prazo ? 'l-descalibrado' : (m.em_aberto ? 'l-solicitado' : ''),
+    colunas: [
+      { chave:'tag', rotulo:'Tag', classe:'mono', largura:'110px' },
+      { chave:'descricao', rotulo:'Instrumento' },
+      { chave:'tipo', rotulo:'Tipo', largura:'90px',
+        html: m => esc(TIPO_ROTULO[m.tipo] || m.tipo) },
+      { chave:'responsavel', rotulo:'Responsável', largura:'150px' },
+      { chave:'setor', rotulo:'Setor', largura:'120px' },
+      { chave:'entregue_por', rotulo:'Entregue por', largura:'140px' },
+      { chave:'data_saida', rotulo:'Saída', largura:'140px',
+        html: m => esc(fmtDT(m.data_saida)) },
+      { chave:'data_prevista_retorno', rotulo:'Prevista', largura:'140px',
+        html: m => esc(m.data_prevista_retorno ? fmtDT(m.data_prevista_retorno) : '—') },
+      { chave:'data_retorno', rotulo:'Devolução', largura:'140px',
+        html: m => esc(m.data_retorno ? fmtDT(m.data_retorno) : '—') },
+      { chave:'recebido_por', rotulo:'Recebido por', largura:'140px',
+        html: m => esc(m.recebido_por || '—') },
+      { chave:'dias_fora', rotulo:'Dias', classe:'num', largura:'80px' },
+      { chave:'em_aberto', rotulo:'Situação', largura:'150px',
+        valor: m => m.fora_do_prazo ? 0 : (m.em_aberto ? 1 : 2),
+        html: m => situacaoHist(m) },
+      { chave:'termo_path', rotulo:'Termo', largura:'92px', ordenavel:false,
+        html: m => m.termo_path
+          ? `<button class="btn btn-outline btn-sm" data-termo="${esc(m.termo_path)}">Ver</button>`
+          : '—' }
+    ]
+  });
+}
+
+function situacaoHist(m){
+  if (m.fora_do_prazo && m.em_aberto) return '<span class="bdg s-descalibrado">Atrasado</span>';
+  if (m.fora_do_prazo)                return '<span class="bdg s-descalibrado">Devolvido com atraso</span>';
+  if (m.em_aberto)                    return '<span class="bdg s-solicitado">Em aberto</span>';
+  return '<span class="bdg s-calibrado">Devolvido</span>';
+}
+
+/* ---- Linhas planas: mesma base para Excel e PDF --------------------- */
+const CAB_HIST = ['Tag','Instrumento','Nº de série','Família','Tipo','Responsável','Setor',
+                  'Entregue por','Saída','Devolução prevista','Devolução','Recebido por',
+                  'Dias fora','Situação','Observação da devolução','Registrado por'];
+
+function linhasHistPlanas(){
+  const base = tabelaHist ? tabelaHist.linhas : historico;
+  const situacaoTexto = m =>
+    m.em_aberto ? (m.fora_do_prazo ? 'Atrasado' : 'Em aberto')
+                : (m.fora_do_prazo ? 'Devolvido com atraso' : 'Devolvido');
+  return base.map(m => [
+    m.tag, m.descricao, m.num_serie || '—', m.familia_nome,
+    TIPO_ROTULO[m.tipo] || m.tipo, m.responsavel, m.setor,
+    m.entregue_por,
+    fmtDT(m.data_saida),
+    m.data_prevista_retorno ? fmtDT(m.data_prevista_retorno) : '—',
+    m.data_retorno ? fmtDT(m.data_retorno) : '—',
+    m.recebido_por || '—',
+    m.dias_fora,
+    situacaoTexto(m),
+    m.obs_devolucao || '—',
+    m.criado_por_email || '—'
+  ]);
+}
+
+function nomeArquivoHist(ext){
+  const d = new Date();
+  return `Emprestimos-${slug(descHist.titulo)}-${d.getFullYear()}${p2(d.getMonth()+1)}${p2(d.getDate())}.${ext}`;
+}
+
+async function exportarHistExcel(container){
+  const bt = container.querySelector('#btHExcel');
+  bt.disabled = true; bt.textContent = 'Gerando…';
+  try {
+    const XLSX = await lerXLSX();
+    const aba = XLSX.utils.aoa_to_sheet([CAB_HIST, ...linhasHistPlanas()]);
+    aba['!cols'] = CAB_HIST.map((c,i) => ({ wch: i === 1 ? 42 : Math.max(12, c.length + 3) }));
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, aba, 'Empréstimos');
+    const buf = XLSX.write(wb, { bookType:'xlsx', type:'array' });
+    baixarBlob(nomeArquivoHist('xlsx'),
+      new Blob([buf], { type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
+    toast('Planilha gerada.', 'success');
+  } catch (e){ toast('Falha ao gerar a planilha: ' + msgErro(e), 'error'); }
+  finally { bt.disabled = false; bt.textContent = 'Exportar para Excel'; }
+}
+
+async function exportarHistPDF(container){
+  const bt = container.querySelector('#btHPDF');
+  bt.disabled = true; bt.textContent = 'Gerando…';
+  try {
+    const pdfMake = await lerPDFMake();
+    const linhas = linhasHistPlanas();
+    const emitido = new Date();
+
+    // Colunas enxutas: paisagem A4 ainda tem largura finita.
+    // Tag, Instrumento, Tipo, Responsável, Setor, Entregue, Saída, Devolução, Recebido, Dias, Situação
+    const cols = [0,1,4,5,6,7,8,10,11,12,13];
+    const cab  = cols.map(i => CAB_HIST[i]);
+    const corpo = linhas.map(l => cols.map(i => String(l[i] ?? '—')));
+
+    const doc = {
+      pageSize: 'A4',
+      pageOrientation: 'landscape',
+      pageMargins: [28, 92, 28, 40],
+
+      header: () => ({
+        margin: [28, 16, 28, 0],
+        columns: [
+          window.LOGO_B64
+            ? { image: window.LOGO_B64, width: 104, margin:[0,2,0,0] }
+            : { text: CONFIG.EMPRESA, bold:true, fontSize:12 },
+          { stack: [
+              { text:'CONTROLE DE EMPRÉSTIMO DE INSTRUMENTOS', bold:true, fontSize:11.5, alignment:'right' },
+              { text: descHist.titulo, bold:true, fontSize:9, color:'#C0392B',
+                alignment:'right', margin:[0,2,0,0] },
+              { text: descHist.linha, fontSize:7, color:'#87827D',
+                alignment:'right', margin:[0,2,0,0] },
+              { text:`${linhas.length} registro(s)  ·  emitido em ${fmtData(hojeISO())} às ${p2(emitido.getHours())}:${p2(emitido.getMinutes())} por ${meuNome()}`,
+                fontSize:7, color:'#87827D', alignment:'right', margin:[0,1,0,0] }
+            ] }
+        ]
+      }),
+
+      footer: (pagina, total) => ({
+        margin: [28, 8, 28, 0],
+        columns: [
+          { text:`${CONFIG.EMPRESA}  •  ${CONFIG.DOC_REF}`, fontSize:6.5, italics:true, color:'#AAA5A0' },
+          { text:`Página ${pagina} de ${total}`, fontSize:6.5, color:'#AAA5A0', alignment:'right' }
+        ]
+      }),
+
+      content: [
+        { canvas:[{ type:'line', x1:0, y1:0, x2:786, y2:0, lineWidth:0.8, lineColor:'#C0392B' }], margin:[0,0,0,10] },
+        {
+          table: {
+            headerRows: 1,
+            widths: ['auto','*','auto','auto','auto','auto','auto','auto','auto','auto','auto'],
+            body: [
+              cab.map(t => ({ text:t, bold:true, fontSize:7.5, color:'#F0E6E4', fillColor:'#1A1210' })),
+              ...corpo.map(l => l.map(c => ({ text:c, fontSize:7.5 })))
+            ]
+          },
+          layout: {
+            hLineWidth: i => i <= 1 ? 0.8 : 0.3,
+            vLineWidth: () => 0,
+            hLineColor: i => i <= 1 ? '#1A1210' : '#E0DBD5',
+            paddingTop: () => 3.5, paddingBottom: () => 3.5,
+            fillColor: i => i > 0 && i % 2 === 0 ? '#F8F7F5' : null
+          }
+        }
+      ],
+      defaultStyle: { font:'Roboto' }
+    };
+
+    pdfMake.createPdf(doc).download(nomeArquivoHist('pdf'));
+    toast('PDF gerado.', 'success');
+  } catch (e){
+    console.error(e);
+    toast('Falha ao gerar o PDF: ' + msgErro(e), 'error');
+  } finally { bt.disabled = false; bt.textContent = 'Exportar para PDF'; }
 }

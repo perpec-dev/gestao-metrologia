@@ -65,8 +65,12 @@ grant delete on public.calibracoes to authenticated;    -- policy limita a admin
 
 -- MOVIMENTAÇÕES ------------------------------------------------------
 -- Sem INSERT direto: a trava de status vive em registrar_movimentacao().
+-- Sem UPDATE direto também: fechar um empréstimo pela API deixaria de
+-- gravar quem recebeu e quem registrou, e é justamente esse par que
+-- transforma a linha em histórico auditável. Só registrar_devolucao()
+-- fecha uma saída — e ela é security definer, não depende deste grant.
 grant select on public.movimentacoes to authenticated;
-grant update (data_retorno, obs_devolucao) on public.movimentacoes to authenticated;
+revoke update on public.movimentacoes from authenticated;
 
 -- DOCUMENTOS / INSPEÇÕES ---------------------------------------------
 grant select, insert on public.documentos to authenticated;
@@ -177,9 +181,8 @@ create policy cal_apagar on public.calibracoes
 drop policy if exists mov_ler on public.movimentacoes;
 create policy mov_ler on public.movimentacoes
   for select to authenticated using (public.sou_ativo());
+-- A policy de update sai junto com o grant: devolução só por RPC.
 drop policy if exists mov_devolver on public.movimentacoes;
-create policy mov_devolver on public.movimentacoes
-  for update to authenticated using (public.sou_ativo()) with check (public.sou_ativo());
 
 -- DOCUMENTOS / INSPEÇÕES
 drop policy if exists doc_ler on public.documentos;
