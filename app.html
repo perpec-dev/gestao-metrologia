@@ -62,7 +62,7 @@
 <script type="module">
 import { CONFIG } from './config.js';
 import { exigirSessao, vigiarSessao, sair, perfil, souAdmin } from './auth.js';
-import { carregarConfig, ouvir, listarInstrumentos } from './supabase.js';
+import { carregarConfig, configFaltando, ouvir, listarInstrumentos } from './supabase.js';
 import { montarNav, iniciarRouter, contadorNav } from './router.js';
 import { p2, toast, msgErro } from './utils.js';
 
@@ -113,8 +113,22 @@ async function atualizarContadores(){
 
   vigiarSessao();
 
-  try { await carregarConfig(); }
-  catch (e){ toast('Não foi possível ler as configurações: ' + msgErro(e), 'error'); }
+  /* Configurações vazias deixam listas suspensas em branco — e uma lista
+     vazia trava o usuário sem dizer por quê. Avisa alto; a tela continua
+     funcionando com os padrões de PADROES_CONFIG. */
+  try {
+    await carregarConfig();
+    const faltando = configFaltando();
+    if (faltando.length){
+      console.warn('[metrologia] chaves ausentes em public.config:', faltando);
+      toast('Configurações incompletas no banco (' + faltando.join(', ') +
+            ').\nUsando os valores padrão. Rode o sql/04_seed.sql.', 'error');
+    }
+  } catch (e){
+    console.error('[metrologia] falha ao ler public.config:', e);
+    toast('Não foi possível ler as configurações: ' + msgErro(e) +
+          '\nA tela segue com os valores padrão.', 'error');
+  }
 
   document.getElementById('usuarioNome').textContent = p.nome || p.email;
   const elPapel = document.getElementById('usuarioPapel');

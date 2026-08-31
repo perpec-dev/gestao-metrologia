@@ -29,6 +29,12 @@ export function uid(){
   });
 }
 
+/** Texto legível -> pedaço de nome de arquivo, preservando a caixa. */
+export function slug(texto, max = 48){
+  return String(texto || '').normalize('NFD').replace(ACENTOS,'')
+    .replace(/[^A-Za-z0-9]+/g,'-').replace(/^-+|-+$/g,'').slice(0, max);
+}
+
 /* Nome de arquivo seguro para o Storage (sem acento, espaço ou barra). */
 export function nomeSeguro(nome){
   const limpo = String(nome || 'arquivo').normalize('NFD')

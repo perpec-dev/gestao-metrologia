@@ -142,8 +142,12 @@ export async function render(container, params = []){
 function ligarAutocomplete(container){
   const inp   = container.querySelector('#fInstrumento');
   const lista = container.querySelector('#acLista');
+  const cartao = inp.closest('.card');
 
-  const fechar = () => { lista.hidden = true; lista.innerHTML = ''; };
+  // Enquanto a lista está aberta, o cartão precisa ficar acima dos
+  // cartões seguintes — senão eles pintam por cima dos resultados.
+  const abrir  = () => { lista.hidden = false; cartao?.classList.add('ac-aberto'); };
+  const fechar = () => { lista.hidden = true; lista.innerHTML = ''; cartao?.classList.remove('ac-aberto'); };
 
   const buscar = debounce(() => {
     const t = chave(inp.value);
@@ -151,11 +155,11 @@ function ligarAutocomplete(container){
     const achados = instrumentos
       .filter(i => i.condicao_fisica === 'ativo')
       .filter(i => chave(i.tag + ' ' + i.descricao + ' ' + (i.num_serie||'') + ' ' + i.familia_nome).includes(t))
-      .slice(0, 12);
+      .slice(0, 30);
 
     if (!achados.length){
       lista.innerHTML = `<div class="ac-item" style="cursor:default;color:var(--muted)">Nenhum instrumento encontrado.</div>`;
-      lista.hidden = false; return;
+      abrir(); return;
     }
     lista.innerHTML = achados.map(i => `
       <div class="ac-item" data-id="${esc(i.id)}">
@@ -163,11 +167,12 @@ function ligarAutocomplete(container){
         <div><span>${esc(i.familia_nome)}</span> ${badge(i.status_efetivo)}
           ${i.emprestado ? '<span class="bdg s-solicitado">Já emprestado</span>' : ''}</div>
       </div>`).join('');
-    lista.hidden = false;
+    abrir();
   }, 160);
 
   inp.addEventListener('input', buscar);
   inp.addEventListener('focus', buscar);
+  inp.addEventListener('keydown', e => { if (e.key === 'Escape') fechar(); });
   document.addEventListener('click', e => { if (!e.target.closest('#wInstrumento')) fechar(); });
 
   delegar(lista, 'click', '.ac-item[data-id]', (e, el) => {

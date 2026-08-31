@@ -135,7 +135,10 @@ begin
   perform public.auditar('instrumentos', gen_random_uuid(), 'acervo_apagado',
                          v_qtd::text || ' instrumento(s)', '0', p_justificativa);
 
-  delete from public.instrumentos;
+  -- `where true`: o Supabase liga a extensão pg_safeupdate por padrão,
+  -- que recusa DELETE/UPDATE sem cláusula WHERE mesmo dentro de função
+  -- security definer. O filtro é sintático, não muda o que é apagado.
+  delete from public.instrumentos where true;
   return v_qtd;
 end $$;
 
@@ -152,6 +155,28 @@ begin
 end $$;
 
 -- ---------------------------------------------------------------------
+-- 2.1 CONFIGURAÇÕES QUE FALTAM
+--     A tela de Administração salva parâmetro com upsert, para o caso de
+--     a chave nunca ter sido semeada. Sem GRANT e política de INSERT, o
+--     upsert falharia — e o 02_rls.sql só previu UPDATE.
+-- ---------------------------------------------------------------------
+grant insert (chave, valor) on public.config to authenticated;
+
+drop policy if exists config_criar on public.config;
+create policy config_criar on public.config
+  for insert to authenticated with check (public.sou_admin());
+
+-- Repõe qualquer chave obrigatória que esteja faltando. Idempotente:
+-- as que já existem ficam com o valor atual.
+insert into public.config (chave, valor) values
+  ('dias_proximo_vencimento', '15'),
+  ('setores', 'Qualidade,Produção,Manutenção,Logística,Engenharia'),
+  ('prazo_alerta_emprestimo_casual_dias', '30'),
+  ('prazo_alerta_emprestimo_externo_dias', '7'),
+  ('motivos_inativacao', 'Sucateado,Vago,Não entregue,Danificado')
+on conflict (chave) do nothing;
+
+-- ---------------------------------------------------------------------
 -- 3. PERMISSÕES
 -- ---------------------------------------------------------------------
 grant execute on function public.definir_papel(uuid,text)                 to authenticated;
@@ -165,6 +190,10 @@ grant execute on function public.apagar_instrumentos_da_familia(uuid,text) to au
 -- 4. RECEITAS DE MANUTENÇÃO (SQL Editor)
 --    Descomente, leia, e só então rode. Estas rodam como `postgres`:
 --    ignoram RLS e não passam pelas RPCs auditadas.
+--
+--    O Supabase liga por padrão a extensão pg_safeupdate, que recusa
+--    DELETE/UPDATE sem WHERE — por isso os apagamentos totais abaixo
+--    levam `where true`. É só sintaxe: não muda o que é apagado.
 -- ---------------------------------------------------------------------
 
 -- -- 4.1 Quantos registros existem hoje:
@@ -177,7 +206,7 @@ grant execute on function public.apagar_instrumentos_da_familia(uuid,text) to au
 
 -- -- 4.2 Apagar TODOS os instrumentos (cascata leva calibrações,
 -- --     movimentações, inspeções e documentos). Famílias e config ficam.
--- delete from public.instrumentos;
+-- delete from public.instrumentos where true;
 
 -- -- 4.3 Apagar só os importados hoje (desfazer uma importação recém-feita):
 -- delete from public.instrumentos
@@ -189,14 +218,14 @@ grant execute on function public.apagar_instrumentos_da_familia(uuid,text) to au
 
 -- -- 4.5 Zerar TAMBÉM as famílias (recomeço completo do cadastro).
 -- --     Instrumentos primeiro: a FK é `on delete restrict`.
--- delete from public.instrumentos;
--- delete from public.familias;
+-- delete from public.instrumentos where true;
+-- delete from public.familias where true;
 
 -- -- 4.6 Recomeço de verdade, inclusive a trilha de auditoria.
 -- --     Os gatilhos append-only bloqueiam DELETE: desligue, apague, religue.
 -- --     Use só em ambiente de testes, nunca em produção com dado real.
 -- alter table public.auditoria disable trigger auditoria_sem_delete;
--- delete from public.auditoria;
+-- delete from public.auditoria where true;
 -- alter table public.auditoria enable  trigger auditoria_sem_delete;
 
 -- -- 4.7 Arquivos no Storage NÃO somem com o delete do banco.

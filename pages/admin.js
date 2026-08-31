@@ -13,7 +13,8 @@
 import { esc, fmtDT, toast, msgErro, htmlCarregando, htmlVazio, chave, debounce } from '../utils.js';
 import { listarUsuarios, definirPapel, definirAtivo, listarAuditoria,
          listarFamilias, listarInstrumentos, carregarConfig, salvarConfig,
-         apagarTodosInstrumentos, apagarInstrumentosDaFamilia, cfg } from '../supabase.js';
+         apagarTodosInstrumentos, apagarInstrumentosDaFamilia,
+         cfg, configFaltando } from '../supabase.js';
 import { souAdmin, meuEmail } from '../auth.js';
 import { abrirModal, confirmar } from '../components/modal.js';
 import { criarTabela } from '../components/tabela.js';
@@ -183,9 +184,17 @@ async function abaUsuarios(el){
 /* PARÂMETROS                                                           */
 /* ==================================================================== */
 async function abaParametros(el){
-  await carregarConfig(true);
+  try { await carregarConfig(true); } catch(e){ /* segue com os padrões */ }
+  const faltando = configFaltando();
 
   el.innerHTML = `
+    ${faltando.length ? `<div class="warn-box e">
+      <b>Faltam ${faltando.length} configuração(ões) no banco:</b>
+      <code>${faltando.map(esc).join('</code>, <code>')}</code>.<br>
+      A tela está usando os valores padrão para não travar as listas suspensas, mas eles
+      <b>não estão salvos</b>. Clique em <b>Salvar</b> em cada campo abaixo para gravá-los —
+      ou rode <code>sql/04_seed.sql</code> no SQL Editor.
+    </div>` : ''}
     <div class="warn-box i">
       Estes valores mudam o comportamento do sistema para todo mundo, na hora.
       Cada um diz embaixo o que acontece se o número mudar.
@@ -198,7 +207,7 @@ async function abaParametros(el){
             <label for="f${esc(p.chave)}">${esc(p.rotulo)}${p.unidade ? ' (' + esc(p.unidade) + ')' : ''}</label>
             <div style="display:flex;gap:8px;align-items:flex-start">
               <input type="${p.tipo === 'number' ? 'number' : 'text'}" id="f${esc(p.chave)}"
-                     value="${esc(cfg(p.chave, ''))}" ${p.tipo === 'number' ? 'min="1" max="3650"' : ''}
+                     value="${esc(cfg(p.chave))}" ${p.tipo === 'number' ? 'min="1" max="3650"' : ''}
                      style="${p.tipo === 'number' ? 'max-width:160px' : ''}">
               <button class="btn btn-outline" data-salvar="${esc(p.chave)}">Salvar</button>
             </div>
@@ -224,8 +233,11 @@ async function abaParametros(el){
     try {
       await salvarConfig(k, valor);
       toast('Parâmetro atualizado.', 'success');
-    } catch (e){ toast(msgErro(e), 'error'); }
-    finally { b.disabled = false; b.textContent = 'Salvar'; }
+      await abaParametros(el);      // some o aviso de chave faltando
+    } catch (e){
+      toast(msgErro(e), 'error');
+      b.disabled = false; b.textContent = 'Salvar';
+    }
   }));
 }
 

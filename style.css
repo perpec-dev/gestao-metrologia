@@ -190,10 +190,17 @@ a:hover{text-decoration:underline}
 /* =====================================================================
    CARTÕES
    ===================================================================== */
-.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--r-lg);
-      margin-bottom:1.25rem;box-shadow:var(--sh-1);overflow:hidden;
+/* Sem `overflow:hidden`: ele recortava a lista do autocomplete, que é
+   posicionada fora dos limites do cartão. O cabeçalho tem o mesmo fundo
+   do cartão, então nada precisa ser recortado para os cantos ficarem
+   corretos. */
+.card{position:relative;background:var(--surface);border:1px solid var(--border);
+      border-radius:var(--r-lg);margin-bottom:1.25rem;box-shadow:var(--sh-1);
       transition:box-shadow .22s var(--saida),border-color .22s var(--saida)}
 .card:hover{box-shadow:var(--sh-2)}
+/* Cartão com autocomplete aberto sobe acima dos cartões seguintes,
+   que vêm depois no DOM e, sem isso, pintariam por cima da lista. */
+.card.ac-aberto{z-index:60}
 .card-head{padding:.95rem 1.4rem .85rem;display:flex;align-items:center;gap:11px;flex-wrap:wrap;
            border-bottom:1px solid var(--hair);background:var(--surface)}
 /* Marcador vermelho: o acento da marca, do tamanho de um acento. */
@@ -538,10 +545,10 @@ table.tbl input[type=checkbox]{width:16px;height:16px;accent-color:var(--red);cu
 /* =====================================================================
    AUTOCOMPLETE
    ===================================================================== */
-.ac{position:relative}
-.ac-lista{position:absolute;z-index:50;left:0;right:0;top:calc(100% + 4px);background:var(--surface);
+.ac{position:relative;z-index:30}
+.ac-lista{position:absolute;z-index:70;left:0;right:0;top:calc(100% + 4px);background:var(--surface);
           border:1px solid var(--border);border-radius:var(--r);box-shadow:var(--sh-3);
-          max-height:300px;overflow-y:auto;padding:4px}
+          max-height:min(52vh,340px);overflow-y:auto;overscroll-behavior:contain;padding:4px}
 .ac-lista[hidden]{display:none}
 .ac-item{padding:9px 11px;cursor:pointer;font-size:13px;border-radius:var(--r-sm);color:var(--text2);
          transition:background .12s}

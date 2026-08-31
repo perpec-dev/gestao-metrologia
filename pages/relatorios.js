@@ -6,7 +6,7 @@
    referência do documento e "Página X de Y" em todas as páginas.
    ===================================================================== */
 import { esc, fmtData, hojeISO, toast, msgErro, htmlVazio, htmlCarregando,
-         lerXLSX, lerPDFMake, baixarBlob, p2 } from '../utils.js';
+         lerXLSX, lerPDFMake, baixarBlob, p2, slug } from '../utils.js';
 import { consultarInstrumentos, listarFamilias } from '../supabase.js';
 import { CONFIG } from '../config.js';
 import { criarTabela } from '../components/tabela.js';
@@ -16,6 +16,10 @@ import { meuNome } from '../auth.js';
 let resultado = [];
 let tabela = null;
 let familias = [];
+/* Descrição do recorte que gerou `resultado`. Guardada no momento da
+   consulta, não lida do formulário na hora de exportar: entre gerar e
+   exportar o usuário pode ter mexido nos filtros sem clicar em Gerar. */
+let descricao = { titulo:'Relatório geral do acervo', linha:'' };
 
 export function destroy(){ resultado = []; tabela = null; }
 
@@ -126,6 +130,55 @@ function lerFiltros(container){
   };
 }
 
+/* ---------------------------------------------------------------------
+   Descrição legível do recorte.
+
+   Um relatório impresso sem dizer o que foi filtrado é uma lista de
+   números sem contexto: quem recebe não tem como saber se está vendo o
+   acervo inteiro ou uma fatia. Vai no cabeçalho do PDF e na tela.
+   --------------------------------------------------------------------- */
+function descreverFiltros(f){
+  const partes = [];
+
+  partes.push(f.status_efetivo?.length
+    ? 'Situação: ' + f.status_efetivo.map(rotulo).join(', ')
+    : 'Situação: todas');
+
+  if (f.familia_id){
+    const fam = familias.find(x => x.id === f.familia_id);
+    partes.push('Família: ' + (fam ? `${fam.codigo} — ${fam.nome}` : '—'));
+  }
+
+  partes.push('Condição física: ' +
+    (f.condicao_fisica === 'ativo' ? 'ativos'
+     : f.condicao_fisica === 'inativo' ? 'inativos' : 'todas'));
+
+  if (f.tipo) partes.push('Tipo: ' + (f.tipo === 'TMMDE' ? 'TMMDE (uso)' : 'Referência'));
+
+  const faixa = (rot, de, ate) => {
+    if (de && ate) return `${rot}: ${fmtData(de)} a ${fmtData(ate)}`;
+    if (de)        return `${rot}: a partir de ${fmtData(de)}`;
+    if (ate)       return `${rot}: até ${fmtData(ate)}`;
+    return null;
+  };
+  const p = faixa('Próxima calibração', f.proxima_de, f.proxima_ate);
+  const c = faixa('Última calibração',  f.calibracao_de, f.calibracao_ate);
+  if (p) partes.push(p);
+  if (c) partes.push(c);
+
+  /* Título curto: o recorte mais específico é o que nomeia o relatório. */
+  let titulo = 'Relatório geral do acervo';
+  if (f.status_efetivo?.length === 1) titulo = 'Instrumentos — ' + rotulo(f.status_efetivo[0]);
+  else if (f.status_efetivo?.length > 1) titulo = 'Instrumentos por situação';
+  if (f.familia_id){
+    const fam = familias.find(x => x.id === f.familia_id);
+    if (fam) titulo += ' · ' + fam.nome;
+  }
+  if (f.condicao_fisica === 'inativo') titulo += ' · inativos';
+
+  return { titulo, linha: partes.join('  ·  ') };
+}
+
 function atalho(container, qual){
   const set = (id, val) => container.querySelector('#'+id).value = val;
   container.querySelectorAll('.fSt').forEach(c => c.checked = false);
@@ -158,15 +211,19 @@ async function gerar(container){
   const alvo = container.querySelector('#previa');
   alvo.innerHTML = htmlCarregando('Consultando…');
   tabela = null;
+  const filtros = lerFiltros(container);
   try {
-    resultado = await consultarInstrumentos(lerFiltros(container));
+    resultado = await consultarInstrumentos(filtros);
   } catch (e){
     alvo.innerHTML = `<div class="warn-box e">${esc(msgErro(e))}</div>`;
     return;
   }
+  descricao = descreverFiltros(filtros);
 
-  container.querySelector('#contagem').textContent =
-    `${resultado.length} instrumento(s) no resultado · gerado em ${fmtData(hojeISO())}`;
+  container.querySelector('#contagem').innerHTML =
+    `<b style="color:var(--text)">${esc(descricao.titulo)}</b><br>
+     <span style="font-size:12px">${esc(descricao.linha)}</span><br>
+     <span style="font-size:12px">${resultado.length} instrumento(s) · gerado em ${esc(fmtData(hojeISO()))}</span>`;
   container.querySelector('#btExcel').disabled = !resultado.length;
   container.querySelector('#btPDF').disabled   = !resultado.length;
 
@@ -218,7 +275,10 @@ function linhasPlanas(){
 
 function nomeArquivo(ext){
   const d = new Date();
-  return `Relatorio-Metrologia-${d.getFullYear()}${p2(d.getMonth()+1)}${p2(d.getDate())}.${ext}`;
+  // O nome do arquivo também carrega o recorte: uma pasta com cinco
+  // "Relatorio-Metrologia-20260831.pdf" não ajuda ninguém.
+  const recorte = slug(descricao.titulo);
+  return `Relatorio-Metrologia-${recorte}-${d.getFullYear()}${p2(d.getMonth()+1)}${p2(d.getDate())}.${ext}`;
 }
 
 /* ---- Excel ---------------------------------------------------------- */
@@ -258,19 +318,26 @@ async function exportarPDF(container){
     const doc = {
       pageSize: 'A4',
       pageOrientation: 'landscape',
-      pageMargins: [28, 74, 28, 40],
+      // Topo maior: o cabeçalho agora carrega o recorte aplicado, que
+      // pode ocupar duas linhas quando há muitos filtros.
+      pageMargins: [28, 92, 28, 40],
 
       header: () => ({
-        margin: [28, 18, 28, 0],
+        margin: [28, 16, 28, 0],
         columns: [
           window.LOGO_B64
-            ? { image: window.LOGO_B64, width: 108, margin:[0,2,0,0] }
+            ? { image: window.LOGO_B64, width: 104, margin:[0,2,0,0] }
             : { text: CONFIG.EMPRESA, bold:true, fontSize:12 },
           { stack: [
-              { text:'RELATÓRIO DE METROLOGIA', bold:true, fontSize:12, alignment:'right' },
-              { text:`Emitido em ${fmtData(hojeISO())} às ${p2(emitido.getHours())}:${p2(emitido.getMinutes())} por ${meuNome()}`,
-                fontSize:7.5, color:'#87827D', alignment:'right', margin:[0,3,0,0] },
-              { text:`${linhas.length} instrumento(s)`, fontSize:7.5, color:'#87827D', alignment:'right' }
+              { text:'RELATÓRIO DE METROLOGIA', bold:true, fontSize:11.5, alignment:'right' },
+              // O recorte aplicado é parte do documento: sem ele, ninguém
+              // que recebe o PDF sabe se está vendo tudo ou uma fatia.
+              { text: descricao.titulo, bold:true, fontSize:9, color:'#C0392B',
+                alignment:'right', margin:[0,2,0,0] },
+              { text: descricao.linha, fontSize:7, color:'#87827D',
+                alignment:'right', margin:[0,2,0,0] },
+              { text:`${linhas.length} instrumento(s)  ·  emitido em ${fmtData(hojeISO())} às ${p2(emitido.getHours())}:${p2(emitido.getMinutes())} por ${meuNome()}`,
+                fontSize:7, color:'#87827D', alignment:'right', margin:[0,1,0,0] }
             ] }
         ]
       }),

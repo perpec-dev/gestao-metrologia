@@ -34,19 +34,51 @@ function ok(res){
    =================================================================== */
 let _config = null;
 
+/* Rede de segurança: se a tabela config estiver vazia, ilegível ou ainda
+   não carregada, uma lista suspensa vazia trava o usuário sem explicar
+   por quê. Estes padrões são os mesmos do 04_seed.sql — servem só para
+   a tela continuar utilizável enquanto o problema real é resolvido. */
+export const PADROES_CONFIG = {
+  dias_proximo_vencimento: '15',
+  setores: 'Qualidade,Produção,Manutenção,Logística,Engenharia',
+  prazo_alerta_emprestimo_casual_dias: '30',
+  prazo_alerta_emprestimo_externo_dias: '7',
+  motivos_inativacao: 'Sucateado,Vago,Não entregue,Danificado'
+};
+
 export async function carregarConfig(forcar = false){
   if (_config && !forcar) return _config;
   const linhas = ok(await sb.from('config').select('chave,valor'));
   _config = Object.fromEntries(linhas.map(l => [l.chave, l.valor]));
   return _config;
 }
-export const cfg      = (chaveCfg, padrao = '') => (_config && _config[chaveCfg] != null) ? _config[chaveCfg] : padrao;
-export const cfgInt   = (chaveCfg, padrao = 0)  => parseInt(cfg(chaveCfg, String(padrao)), 10) || padrao;
-export const cfgLista = (chaveCfg)              => cfg(chaveCfg,'').split(',').map(s => s.trim()).filter(Boolean);
 
+/** true quando a tabela config respondeu com as chaves esperadas. */
+export const configCarregada = () =>
+  !!_config && Object.keys(PADROES_CONFIG).every(k => _config[k] != null);
+
+/** Chaves que faltaram — usado para avisar o administrador na tela. */
+export const configFaltando = () =>
+  Object.keys(PADROES_CONFIG).filter(k => !_config || _config[k] == null);
+
+export const cfg = (chaveCfg, padrao = null) => {
+  if (_config && _config[chaveCfg] != null && String(_config[chaveCfg]).trim() !== '')
+    return _config[chaveCfg];
+  if (padrao != null) return padrao;
+  return PADROES_CONFIG[chaveCfg] ?? '';
+};
+export const cfgInt   = (chaveCfg, padrao = 0) => parseInt(cfg(chaveCfg, null), 10) || padrao;
+export const cfgLista = (chaveCfg)             => cfg(chaveCfg, null)
+                                                    .split(',').map(s => s.trim()).filter(Boolean);
+
+/** upsert, não update: se a chave nunca foi semeada, UPDATE afeta zero
+    linhas e "dá certo" sem gravar nada — o pior tipo de sucesso. */
 export async function salvarConfig(chaveCfg, valor){
-  ok(await sb.from('config').update({ valor: String(valor) }).eq('chave', chaveCfg).select());
-  if (_config) _config[chaveCfg] = String(valor);
+  ok(await sb.from('config')
+       .upsert({ chave: chaveCfg, valor: String(valor) }, { onConflict: 'chave' })
+       .select());
+  if (!_config) _config = {};
+  _config[chaveCfg] = String(valor);
 }
 
 /* ===================================================================
