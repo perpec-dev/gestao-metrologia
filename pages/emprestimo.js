@@ -9,7 +9,7 @@
    ===================================================================== */
 import { esc, fmtDT, fmtData, hojeISO, p2, slug, chave, toast, msgErro, debounce,
          htmlVazio, htmlCarregando, validador, limparErros, delegar,
-         lerXLSX, lerPDFMake, baixarBlob } from '../utils.js';
+         lerXLSX, lerPDFMake, baixarBlob, lembrar, lembrado } from '../utils.js';
 import { listarInstrumentos, listarEmprestimosAbertos, registrarMovimentacao,
          registrarDevolucao, listarHistoricoEmprestimos, enviarArquivo,
          listarEmailsSetor, cfgLista, ouvir, abrirArquivo,
@@ -33,6 +33,11 @@ let raiz = null;
    Carregado uma vez por visita: é lista curta e quase estática. */
 let emailsSetor = new Map();
 
+/* Em aberto: a lista veio do servidor uma vez, e trocar a visualização
+   entre casual, posse e externo é recorte em memória. */
+let abertos = [];
+let filtroTipo = '';          // '' = todos
+
 let historico = [];
 let histConsultado = false;   // consulta vazia também conta: não repetir
 let tabelaHist = null;
@@ -42,6 +47,7 @@ export function destroy(){
   if (desligarRealtime){ desligarRealtime(); desligarRealtime = null; }
   instrumentos = []; escolhido = null; raiz = null;
   emailsSetor = new Map();
+  abertos = [];
   historico = []; histConsultado = false; tabelaHist = null;
 }
 
@@ -49,6 +55,7 @@ export function destroy(){
 export async function render(container, params = []){
   raiz = container;
   const setores = cfgLista('setores');
+  filtroTipo = lembrado('filtros.emprestimoAberto', '') || '';
 
   container.innerHTML = `
     <div class="subtabs">
@@ -401,18 +408,60 @@ function limparSaida(container){
 
 /* ==================================================================== */
 /* EM ABERTO                                                            */
+/*                                                                      */
+/* Os três tipos de empréstimo são três assuntos diferentes: o casual   */
+/* volta no mesmo dia, a posse fica com o responsável por tempo         */
+/* indeterminado e o externo saiu da empresa. Quem vai cobrar devolução */
+/* olha um de cada vez — daí o seletor de visualização, com a contagem  */
+/* de cada tipo à vista mesmo quando não é o tipo escolhido.            */
 /* ==================================================================== */
 async function carregarAbertos(){
   if (!raiz) return;
   const el = raiz.querySelector('#listaAbertos');
   if (!el) return;
   try {
-    const lista = await listarEmprestimosAbertos();
-    if (!lista.length){ el.innerHTML = htmlVazio('Nenhum instrumento emprestado no momento.'); return; }
+    abertos = await listarEmprestimosAbertos();
+    pintarAbertos();
+  } catch (e){
+    el.innerHTML = `<div class="warn-box e">${esc(msgErro(e))}</div>`;
+  }
+}
 
-    const atrasados = lista.filter(m => m.em_alerta);
-    const emAlerta = atrasados.length;
-    el.innerHTML = `
+function pintarAbertos(){
+  if (!raiz) return;
+  const el = raiz.querySelector('#listaAbertos');
+  if (!el) return;
+
+  if (!abertos.length){
+    el.innerHTML = htmlVazio('Nenhum instrumento emprestado no momento.');
+    return;
+  }
+
+  const conta = t => t ? abertos.filter(m => m.tipo === t).length : abertos.length;
+  const seletor = `
+    <div class="subtabs subtabs-filtro" id="tiposAberto">
+      ${[['','Todos'], ['casual','Casual'], ['posse','Posse'], ['externo','Externo']]
+        .map(([t, rot]) => `
+          <button class="subtab ${filtroTipo === t ? 'sel' : ''}" data-tipo="${t}"
+                  ${!conta(t) && t ? 'disabled' : ''}>
+            ${esc(rot)} <span class="n">${conta(t)}</span></button>`).join('')}
+    </div>`;
+
+  const lista = filtroTipo ? abertos.filter(m => m.tipo === filtroTipo) : abertos;
+
+  if (!lista.length){
+    el.innerHTML = seletor +
+      htmlVazio(`Nenhum empréstimo do tipo "${TIPO_ROTULO[filtroTipo] || filtroTipo}" em aberto.`);
+    ligarSeletorTipo(el);
+    return;
+  }
+
+  // O aviso de atraso acompanha o recorte na tela: cobrar "todos os
+  // setores" mostrando só uma parte da lista seria cobrar às escuras.
+  const atrasados = lista.filter(m => m.em_alerta);
+  const emAlerta = atrasados.length;
+
+  el.innerHTML = seletor + `
       ${emAlerta ? `<div class="warn-box w fixa">
         <b>${emAlerta}</b> empréstimo(s) passaram do prazo de alerta.
         <div style="margin-top:9px">
@@ -425,7 +474,7 @@ async function carregarAbertos(){
             <div class="rec-grid">
               <div><div class="k">Tag</div><div class="v" style="font-family:'Courier New',monospace">${esc(m.tag)}</div></div>
               <div><div class="k">Instrumento</div><div class="v">${esc(m.descricao)}</div></div>
-              <div><div class="k">Tipo</div><div class="v">${esc(m.tipo)}</div></div>
+              <div><div class="k">Tipo</div><div class="v">${esc(TIPO_ROTULO[m.tipo] || m.tipo)}</div></div>
               <div><div class="k">Responsável</div><div class="v">${esc(m.responsavel)}</div></div>
               <div><div class="k">Setor</div><div class="v">${esc(m.setor)}</div></div>
               <div><div class="k">Entregue por</div><div class="v">${esc(m.entregue_por || '—')}</div></div>
@@ -448,24 +497,32 @@ async function carregarAbertos(){
           </div>
         </div>`).join('')}`;
 
-    el.querySelectorAll('[data-termo]').forEach(b => b.addEventListener('click', async () => {
-      try { await abrirArquivo(CONFIG.BUCKETS.termos, b.dataset.termo); }
-      catch (e){ toast(msgErro(e), 'error'); }
-    }));
+  el.querySelectorAll('[data-termo]').forEach(b => b.addEventListener('click', async () => {
+    try { await abrirArquivo(CONFIG.BUCKETS.termos, b.dataset.termo); }
+    catch (e){ toast(msgErro(e), 'error'); }
+  }));
 
-    el.querySelectorAll('[data-devolver]').forEach(b => b.addEventListener('click', () =>
-      modalDevolucao(b.dataset.devolver, b.dataset.tag)));
+  el.querySelectorAll('[data-devolver]').forEach(b => b.addEventListener('click', () =>
+    modalDevolucao(b.dataset.devolver, b.dataset.tag)));
 
-    el.querySelectorAll('[data-notificar]').forEach(b => b.addEventListener('click', () => {
-      const m = lista.find(x => x.id === b.dataset.notificar);
-      if (m) abrirEmail([m]);
-    }));
+  el.querySelectorAll('[data-notificar]').forEach(b => b.addEventListener('click', () => {
+    const m = lista.find(x => x.id === b.dataset.notificar);
+    if (m) abrirEmail([m]);
+  }));
 
-    const btTodos = el.querySelector('#btNotificarTodos');
-    if (btTodos) btTodos.addEventListener('click', () => modalNotificarTodos(atrasados));
-  } catch (e){
-    el.innerHTML = `<div class="warn-box e">${esc(msgErro(e))}</div>`;
-  }
+  const btTodos = el.querySelector('#btNotificarTodos');
+  if (btTodos) btTodos.addEventListener('click', () => modalNotificarTodos(atrasados));
+
+  ligarSeletorTipo(el);
+}
+
+/** Troca a visualização sem ir ao servidor: os dados já estão na mão. */
+function ligarSeletorTipo(el){
+  el.querySelectorAll('[data-tipo]').forEach(b => b.addEventListener('click', () => {
+    filtroTipo = b.dataset.tipo;
+    lembrar('filtros.emprestimoAberto', filtroTipo);
+    pintarAbertos();
+  }));
 }
 
 /* ==================================================================== */
