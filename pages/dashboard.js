@@ -155,8 +155,12 @@ function indicadores(d){
 /* ==================================================================== */
 function graficos(d){
   const el = elRaiz.querySelector('#graficos');
-  el.innerHTML = `<div id="gArco"></div><div id="gMeses"></div>
-                  <div id="gInativos"></div><div id="gPareto"></div>`;
+  /* A ordem é a da grade 2×2, e cada linha responde um tipo de pergunta:
+       linha 1 — COMPOSIÇÃO do acervo: o que está em uso, o que está fora.
+       linha 2 — TRABALHO: quando vence, e onde as pendências se juntam.
+     Em uma coluna só (telas estreitas) a mesma sequência continua de pé. */
+  el.innerHTML = `<div id="gArco"></div><div id="gInativos"></div>
+                  <div id="gMeses"></div><div id="gPareto"></div>`;
 
   /* --- 1. Arco de situação -------------------------------------------
      'standby_pausado' entra somado a 'calibrado': é exatamente isso que
