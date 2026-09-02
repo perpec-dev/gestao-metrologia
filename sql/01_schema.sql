@@ -89,6 +89,53 @@ returns boolean language sql stable security definer set search_path = public as
          in ('sim','s','true','1','yes')
 $$;
 
+-- Gravação de parâmetro. Existe como RPC, e não como UPDATE direto, por um
+-- motivo prático: a tela usa upsert (a chave pode nunca ter sido semeada),
+-- e INSERT exige GRANT + policy próprios — que o 02_rls.sql revoga toda vez
+-- que roda. Uma chave de configuração deixava de ser gravável depois de
+-- cada manutenção do arquivo de permissões, com a tela dizendo apenas
+-- "operação bloqueada pelo banco". Aqui a regra é uma só e não depende de
+-- ordem de execução de arquivo.
+create or replace function public.salvar_config(p_chave text, p_valor text)
+returns void language plpgsql security definer set search_path = public as $$
+begin
+  if not public.sou_admin() then
+    raise exception 'Somente administradores podem alterar os parâmetros do sistema.';
+  end if;
+  if coalesce(btrim(p_chave),'') = '' then
+    raise exception 'Informe a chave da configuração.';
+  end if;
+  if coalesce(btrim(p_valor),'') = '' then
+    raise exception 'O parâmetro "%" não pode ficar em branco.', p_chave;
+  end if;
+
+  insert into public.config (chave, valor)
+  values (btrim(p_chave), btrim(p_valor))
+  on conflict (chave) do update set valor = excluded.valor;
+end $$;
+
+-- ---------------------------------------------------------------------
+-- 2a. HORIZONTE DE ALERTA DE VENCIMENTO
+--
+-- A metrologia fecha o MÊS, não o dia: o que interessa na segunda-feira
+-- não é "vence em 15 dias", é "o que ainda tenho para resolver até o fim
+-- do mês que vem". Com 'alerta_vencimento_proximo_mes' ligado (padrão),
+-- tudo que vence até o último dia do próximo mês já entra em âmbar —
+-- painel, lista de calibração, contador da aba e relatórios, todos com o
+-- mesmo horizonte, porque todos leem esta função.
+--
+-- Desligando a chave, volta a valer a janela em dias
+-- ('dias_proximo_vencimento'), que continua sendo o comportamento antigo.
+-- ---------------------------------------------------------------------
+create or replace function public.limite_alerta_vencimento()
+returns date language sql stable security definer set search_path = public as $$
+  select case
+    when public.cfg_bool('alerta_vencimento_proximo_mes', true)
+      then (date_trunc('month', current_date) + interval '2 months' - interval '1 day')::date
+    else current_date + public.cfg_int('dias_proximo_vencimento', 15)
+  end
+$$;
+
 -- ---------------------------------------------------------------------
 -- 2b. E-MAIL DO RESPONSÁVEL POR SETOR
 --     Quem cobra a devolução de um instrumento emprestado não é o
@@ -634,6 +681,7 @@ declare
   v_cond   text;
   v_tag    text;
   v_pedido text;
+  v_cert   text := nullif(btrim(coalesce(p_dados->>'certificado_path','')),'');
 begin
   if not public.sou_ativo() then raise exception 'Usuário sem permissão.'; end if;
 
@@ -641,6 +689,13 @@ begin
     into v_cond, v_tag, v_pedido
     from public.instrumentos where id = p_instrumento_id;
   if v_cond is null then raise exception 'Instrumento não encontrado.'; end if;
+
+  -- Calibração sem certificado é afirmação sem prova: é o certificado que
+  -- sustenta a validade numa auditoria. A tela exige o anexo antes de
+  -- enviar; aqui a exigência é de verdade.
+  if v_cert is null then
+    raise exception 'Anexe o certificado de calibração de % para registrar a calibração.', v_tag;
+  end if;
 
   -- Instrumento inativo está fora do fluxo: não encontrado, em
   -- manutenção, sucateado. Calibrar um deles seria registrar um serviço
@@ -659,7 +714,7 @@ begin
     obs_metrologista, laudo_path, standby_apos
   ) values (
     p_instrumento_id, (p_dados->>'data_calibracao')::date,
-    nullif(btrim(coalesce(p_dados->>'certificado_path','')),''),
+    v_cert,
     v_pedido,
     nullif(btrim(coalesce(p_dados->>'obs_metrologista','')),''),
     nullif(btrim(coalesce(p_dados->>'laudo_path','')),''),
@@ -710,18 +765,66 @@ begin
   end if;
 end $$;
 
--- 13.4 Inativar / reativar (auditada, justificativa obrigatória, só admin)
+-- 13.4 Inativar / reativar (auditada, justificativa obrigatória)
+--
+-- Quem inativa é a METROLOGIA, não a administração do sistema: é o
+-- metrologista que abre a gaveta, não encontra o instrumento e precisa
+-- registrar isso na hora. Exigir um administrador para essa operação não
+-- protegia nada — só adiava o registro, e inventário que se registra
+-- depois é inventário que não se registra. O que protege de verdade é o
+-- que continua valendo: justificativa obrigatória, motivo obrigatório e
+-- tudo na trilha de auditoria com e-mail e data.
+--
+-- Apagar instrumento, esse sim, continua sendo só do administrador —
+-- inativar preserva o histórico, apagar destrói.
+--
+-- Duas travas, pelos motivos de sempre — o banco decide, a tela só avisa:
+--
+--   · EMPRÉSTIMO EM ABERTO. Inativar um instrumento que está na mão de
+--     outro setor é declarar segregado o que ninguém segregou. Primeiro a
+--     devolução, depois a inativação.
+--
+--   · CALIBRAÇÃO EM CURSO. 'solicitado' e 'em calibração externa' são
+--     estados de trabalho em andamento: existe pedido aberto e, quase
+--     sempre, o instrumento está no laboratório. Inativar aqui abandona a
+--     solicitação no meio, sem cancelá-la. Volte para descalibrado (o que
+--     também desvincula o pedido) e então inative.
+--
+-- Padrão de referência não participa do fluxo de calibração, então a
+-- segunda trava não se aplica a ele — mas a do empréstimo, sim.
 create or replace function public.inativar_instrumento(
   p_instrumento_id uuid,
   p_motivo text,
   p_justificativa text
 ) returns void language plpgsql security definer set search_path = public as $$
+declare
+  v_tag    text;
+  v_tipo   text;
+  v_status text;
+  v_com    text;
 begin
-  if not public.sou_admin() then
-    raise exception 'Somente administradores podem inativar instrumentos.';
-  end if;
+  if not public.sou_ativo() then raise exception 'Usuário sem permissão.'; end if;
   if coalesce(btrim(p_justificativa),'') = '' then
     raise exception 'Informe a justificativa da inativação.';
+  end if;
+
+  select tag, tipo, status_workflow into v_tag, v_tipo, v_status
+    from public.instrumentos where id = p_instrumento_id;
+  if v_tag is null then raise exception 'Instrumento não encontrado.'; end if;
+
+  select responsavel || ' (' || setor || ')' into v_com
+    from public.movimentacoes
+   where instrumento_id = p_instrumento_id and data_retorno is null
+   order by data_saida desc limit 1;
+
+  if v_com is not null then
+    raise exception 'O instrumento % está emprestado para %. Registre a devolução antes de inativar.',
+      v_tag, v_com;
+  end if;
+
+  if v_tipo <> 'REFERENCIA' and v_status not in ('calibrado','descalibrado') then
+    raise exception 'O instrumento % está com a calibração em andamento ("%"). Só instrumentos calibrados ou descalibrados podem ser inativados — encerre ou cancele a solicitação primeiro.',
+      v_tag, v_status;
   end if;
 
   perform set_config('app.justificativa', p_justificativa, true);
@@ -738,9 +841,7 @@ create or replace function public.reativar_instrumento(
   p_justificativa text
 ) returns void language plpgsql security definer set search_path = public as $$
 begin
-  if not public.sou_admin() then
-    raise exception 'Somente administradores podem reativar instrumentos.';
-  end if;
+  if not public.sou_ativo() then raise exception 'Usuário sem permissão.'; end if;
   if coalesce(btrim(p_justificativa),'') = '' then
     raise exception 'Informe a justificativa da reativação.';
   end if;
@@ -766,16 +867,29 @@ create or replace function public.definir_status_workflow(
   p_justificativa text default null,
   p_pedido text default null
 ) returns void language plpgsql security definer set search_path = public as $$
-declare v_cond text; v_tag text;
+declare
+  v_cond   text;
+  v_tag    text;
+  v_atual  text;
+  v_pedido text := nullif(btrim(coalesce(p_pedido,'')),'');
 begin
   if not public.sou_ativo() then raise exception 'Usuário sem permissão.'; end if;
   if p_status not in ('calibrado','descalibrado','solicitado','em_calibracao_externa') then
     raise exception 'Status inválido: %', p_status;
   end if;
 
-  select condicao_fisica, tag into v_cond, v_tag
+  select condicao_fisica, tag, pedido_calibracao into v_cond, v_tag, v_atual
     from public.instrumentos where id = p_instrumento_id;
   if v_cond is null then raise exception 'Instrumento não encontrado.'; end if;
+
+  -- A rastreabilidade da solicitação é obrigatória: é ela que liga o
+  -- instrumento ao pedido do serviço e viaja até o certificado. Perguntada
+  -- no fim, quando o serviço já acabou, o campo passava em branco — e a
+  -- calibração ficava sem nenhuma amarra documental.
+  if p_status = 'solicitado'
+     and coalesce(v_pedido, nullif(btrim(coalesce(v_atual,'')),'')) is null then
+    raise exception 'Informe a rastreabilidade da solicitação de calibração de %.', v_tag;
+  end if;
 
   -- Instrumento inativado pode estar não encontrado, em manutenção ou
   -- na sucata. Solicitar calibração dele não quer dizer nada — a tela
@@ -793,7 +907,7 @@ begin
          -- Enviar para o laboratório não mexe: é o mesmo pedido.
          pedido_calibracao = case
            when p_status = 'solicitado'
-             then coalesce(nullif(btrim(coalesce(p_pedido,'')),''), pedido_calibracao)
+             then coalesce(v_pedido, pedido_calibracao)
            when p_status = 'descalibrado' then null
            else pedido_calibracao
          end

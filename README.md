@@ -1,7 +1,14 @@
 # Gestão de Metrologia — Perpec Oilfield Supply
 
-Controle de calibração de instrumentos: cadastro, calibração, empréstimo,
-inventário e relatórios.
+**`APP-MET-001`** · Controle de calibração de instrumentos: cadastro, calibração,
+empréstimo, inventário, arquivos e relatórios.
+
+O código da aplicação segue o padrão `APP-<SETOR>-<NNN>`, descrito em
+[`PADRAO-APLICACOES.md`](PADRAO-APLICACOES.md) — isto é um sistema, não um formulário, e
+por isso saiu do padrão `FP-XXX-0000`. Ele se ajusta num lugar só, `CONFIG.APP_REF` em
+`config.js`, e aparece sozinho na faixa do topo, no login e no rodapé dos PDFs. O registro
+de todas as aplicações da Perpec é um documento à parte, fora deste projeto — e não tem
+relação nenhuma com a aba **Inventário** daqui, que é o acervo de instrumentos.
 
 **Stack:** Supabase (Postgres + Auth + Storage + Realtime + RLS) e frontend em
 HTML/CSS/JS puro com ES Modules nativos. Sem Node, sem bundler, sem framework,
@@ -43,19 +50,34 @@ No **SQL Editor**, rode os arquivos **nesta ordem**, um de cada vez:
 | 4 | `sql/04_seed.sql` | Configurações obrigatórias e famílias iniciais |
 | 5 | `sql/05_admin.sql` | Gestão de perfis, apagamento em massa, receitas de manutenção |
 
-Os arquivos **06** e **07** são **migrações**, não instalação: numa instalação nova
-os arquivos 01 a 05 já entregam tudo, e você pode pular os dois.
+Os arquivos **06**, **07** e **08** são **migrações**, não instalação: numa
+instalação nova os arquivos 01 a 05 já entregam tudo, e você pode pular os três.
 
 | Migração | Para quem | Ordem |
 |---|---|---|
 | `sql/06_emprestimos_historico.sql` | banco anterior ao histórico de empréstimos | **06 → 02 → 03** |
 | `sql/07_revisao.sql` | banco anterior à revisão descrita abaixo | **07 → 01 → 02 → 03** |
+| `sql/08_revisao2.sql` | banco anterior à segunda revisão | **08 → 01 → 02 → 03** |
 
 `sql/07_revisao.sql` acrescenta o pedido de compra na solicitação da calibração,
 o cadastro enxuto de instrumento de referência, os motivos novos de inativação,
 o vencimento no último dia do mês e a relação de e-mails por setor. Ele só cria
 colunas, tabela e configurações — as funções e a view vêm de 01 e 03, que precisam
 rodar **depois**.
+
+`sql/08_revisao2.sql` destrava a gravação dos parâmetros pelo administrador
+(o bug em que todo **Salvar** respondia "operação bloqueada pelo banco"), torna
+obrigatórias a rastreabilidade da solicitação e o certificado de calibração,
+impede inativar instrumento emprestado ou com calibração em andamento, passa a
+inativação para o metrologista (apagar continua só do administrador), muda o
+alerta de vencimento para o fim do próximo mês e cria a view `vw_arquivos`, que
+é a pasta de cada equipamento. Vale a mesma regra: ele prepara a configuração,
+e as funções e views vêm de 01 e 03, **depois**.
+
+> Rodando as duas migrações no mesmo dia? A ordem é
+> **07 → 08 → 01 → 02 → 03**: as duas só mexem em coluna, tabela e
+> configuração, e o 01/02/03 no fim resolve funções, permissões e views de
+> uma vez só.
 
 **Confirme antes de avançar** para o frontend:
 
@@ -139,17 +161,20 @@ $txt   = 'window.LOGO_B64 = "data:image/png;base64,' + $b64 + '";'
 ├── style.css               design system (tokens da Perpec)
 ├── /pages/                 uma tela por módulo: render(container) + destroy()
 │   ├── dashboard.js  cadastro.js  calibracao.js
+│   ├── referencia.js       padrões de aferição (tela irmã da calibração)
+│   ├── arquivos.js         uma pasta por equipamento
 │   ├── emprestimo.js inventario.js   relatorios.js
 │   └── admin.js            usuários, parâmetros, manutenção, auditoria
 ├── /components/
 │   ├── tabela.js           tabela ordenável
 │   ├── modal.js            modal, confirmação, pedido de justificativa
-│   ├── status-badge.js     situação e cor num só lugar
+│   ├── status-badge.js     situação, cor e regra de inativação num só lugar
 │   ├── graficos.js         arco, barras e Pareto em SVG puro
 │   ├── timeline.js         linha do tempo do instrumento
+│   ├── arquivos.js         pasta de documentos (ficha e tela Arquivos)
 │   └── form-instrumento.js formulário de cadastro (documento de entrada opcional)
 ├── /sql/                   01_schema · 02_rls · 03_views · 04_seed · 05_admin
-│                           06_emprestimos_historico · 07_revisao (migrações)
+│                           06_emprestimos_historico · 07_revisao · 08_revisao2
 └── logo.js                 logo em base64
 ```
 
@@ -181,8 +206,15 @@ A ordem de decisão da view:
 4. standby com `data_inicio_relogio` nulo → **`standby_pausado`**.
 5. sem `data_proxima` → `descalibrado`.
 6. `data_proxima` no passado → `descalibrado`.
-7. faltam ≤ `dias_proximo_vencimento` dias → `proximo_vencimento`.
+7. vence até `limite_alerta_vencimento()` → `proximo_vencimento`.
 8. caso contrário → `calibrado`.
+
+O passo 7 é o **horizonte do alerta**, e ele é mensal por padrão: entra em âmbar
+tudo que vence até o **último dia do mês que vem**. A conta está em
+`public.limite_alerta_vencimento()`, e é a mesma para o painel, a lista de
+calibração, o contador da aba e os relatórios — mexeu ali, mexeu em todos.
+Desligando `alerta_vencimento_proximo_mes` em **Administração → Parâmetros**,
+volta a valer a janela em dias de `dias_proximo_vencimento`.
 
 ### Semáforo
 
@@ -266,6 +298,10 @@ Por isso nenhuma regra crítica depende da tela:
 | Só instrumento calibrado sai emprestado | `registrar_movimentacao()` — a tela não tem `INSERT` em `movimentacoes` |
 | Posse e externo exigem termo | constraint `termo_obrigatorio` + a mesma RPC |
 | Inativar exige motivo e justificativa | `inativar_instrumento()`; a coluna `condicao_fisica` não tem `GRANT` de UPDATE |
+| Não se inativa instrumento emprestado nem em calibração | `inativar_instrumento()` consulta `movimentacoes` em aberto e `status_workflow` |
+| Solicitar calibração exige rastreabilidade | `definir_status_workflow()` recusa `solicitado` sem pedido |
+| Calibrado exige certificado | `registrar_calibracao()` recusa `certificado_path` vazio |
+| Parâmetro do sistema só o administrador grava | `salvar_config()` verifica `sou_admin()` |
 | Alterar periodicidade exige justificativa | `alterar_periodicidade()`; `familias.periodicidade_meses` não tem `GRANT` de UPDATE |
 | Auditoria é somente-inclusão | sem `GRANT` de UPDATE/DELETE, sem policy, e gatilhos que levantam exceção |
 | `data_proxima` não é escolhida pelo usuário | gatilho `calibracoes_data_proxima` sobrescreve sempre |
@@ -283,8 +319,10 @@ traduzido por `msgErro()` em `utils.js`.
 ## Uso diário
 
 **Painel.** Primeira tela do dia: quantos instrumentos estão descalibrados, quais
-vencem na janela configurada, e quais empréstimos passaram do prazo. Os números
-grandes são clicáveis e levam à lista já filtrada.
+vencem **até o fim do próximo mês**, e quais empréstimos passaram do prazo. Os
+números grandes são clicáveis e levam à lista já filtrada. O cartão e a lista de
+vencimento mostram a data-limite por extenso ("até 31/10/2026"), porque quem
+fecha o mês precisa da data, não de uma contagem de dias.
 
 **Cadastro.** A única porta de entrada do acervo, em quatro abas: novo
 instrumento, import de instrumentos por planilha, criação de famílias e import de
@@ -302,7 +340,18 @@ A **classificação do instrumento**, no topo do formulário, decide o resto da 
 | Classificação | O que aparece |
 |---|---|
 | **TMMDE** — instrumento de uso | tudo: resolução, localização, standby, documento de entrada, inspeção visual e certificado |
-| **Referência** — padrão de aferição | só tag (que é a rastreabilidade), descrição, fabricante, número de série, data de cadastro e observações |
+| **Referência** — padrão de aferição | só tag (que é a rastreabilidade), descrição, fabricante, número de série, data de cadastro, foto e observações |
+
+**Obrigatórios nas duas classificações:** descrição, **fabricante**, **data de
+entrada** e **foto do instrumento**. A foto fica no cartão de identificação, e
+não no de inspeção, porque ela responde "é este mesmo o instrumento?" — pergunta
+que a conferência de inventário faz sobre qualquer item do acervo, inclusive os
+padrões de referência, que não passam por inspeção de entrada.
+
+A **inspeção visual** tem um campo só, o **laudo**, em texto longo e opcional:
+descreve o estado em que o instrumento foi recebido. Antes eram dois campos
+("laudo" e "comentário") pedindo a mesma coisa, e o resultado prático era metade
+da informação em cada um.
 
 Instrumento de referência **não tem exigência de calibração** neste controle: não
 vence, não fica descalibrado, não entra na fila de trabalho da metrologia e não
@@ -334,46 +383,65 @@ de instrumentos vem com cinco linhas de exemplo, uma por caso de preenchimento.
 | `standby` | não | `sim` / `não` — ignorado em linhas de referência |
 | `status` | não | `calibrado`, `descalibrado`, `solicitado`, `em calibracao externa` — **padrão `descalibrado`**; ignorado em linhas de referência |
 | `data_calibracao` | só se `status=calibrado` | `AAAA-MM-DD` — ignorado em linhas de referência |
+| `rastreabilidade` | só se `status=solicitado` | número do pedido, requisição ou ordem de serviço |
 | `situacao` | não | `ativo` / `inativo` — também aceita `sucateado`, `vago`, `não entregue`, `danificado`, que já viram o motivo. **Padrão `ativo`** |
 | `justificativa_inativo` | só se inativo | texto com 10+ caracteres |
 
-Três coisas que a prévia checa e recusa antes de gravar: `calibrado` sem
-`data_calibracao` (sem data não existe validade), `data_calibracao` no futuro ou
-anterior à entrada, e linha inativa importada por quem não é administrador.
+O que a prévia checa e recusa antes de gravar: `calibrado` sem `data_calibracao`
+(sem data não existe validade), `solicitado` sem `rastreabilidade`,
+`data_calibracao` no futuro ou anterior à entrada, linha inativa importada por
+quem não é administrador, e linha inativa que chega com a calibração solicitada
+ou em laboratório — inativar no meio da solicitação a abandona sem cancelá-la.
 
 A **próxima calibração nunca vem da planilha** — quem calcula é o servidor, pela
 periodicidade da família e pelo relógio de standby. Certificados em PDF também
 não vêm por planilha: são anexados depois, na tela de Calibração.
 
-**Calibração.** A lista de trabalho. Filtre por situação, família ou texto livre;
-clique num instrumento para abrir a ficha com o histórico completo. A tela é
-atualizada ao vivo: quando o outro usuário registra uma calibração, a linha
-pisca aqui.
+**Calibração.** A lista de trabalho, e **só dos instrumentos TMMDE**. Filtre por
+situação, família ou texto livre; clique num instrumento para abrir a ficha com
+os arquivos e o histórico completo. A tela é atualizada ao vivo: quando o outro
+usuário registra uma calibração, a linha pisca aqui.
 
-O ciclo tem uma ordem, e o **pedido de compra entra no começo dele**:
+O ciclo tem uma ordem, e a **rastreabilidade entra no começo dele**:
 
-1. **Solicitar calibração** — pergunta o pedido de compra do serviço. É o momento
-   em que ele nasce; perguntá-lo no fim, quando o serviço já acabou e o número
-   está num e-mail de duas semanas atrás, é a receita para o campo passar em
-   branco. Fica guardado em `instrumentos.pedido_calibracao`.
-2. **Enviar para calibração externa** — mesmo pedido, o instrumento sai.
-3. **Tornar calibrado** — pede data, certificado, observações e laudo. O pedido
-   guardado é copiado para o certificado pelo servidor e zerado no instrumento:
-   ele não reaparece na próxima calibração. A próxima data é calculada pelo
-   servidor, nunca digitada.
+1. **Solicitar calibração** — pergunta a **rastreabilidade de solicitação**: o
+   número que identifica o pedido do serviço (pedido de compra, requisição,
+   ordem de serviço). É **obrigatória**, na tela e no banco. É o momento em que
+   ela nasce; perguntá-la no fim, quando o serviço já acabou e o número está num
+   e-mail de duas semanas atrás, é a receita para o campo passar em branco. Fica
+   guardada em `instrumentos.pedido_calibracao`.
+2. **Enviar para calibração externa** — mesma rastreabilidade, o instrumento sai.
+3. **Tornar calibrado** — pede data, **certificado (obrigatório)**, observações e
+   laudo. A rastreabilidade guardada é copiada para o registro da calibração pelo
+   servidor e zerada no instrumento: ela não reaparece na próxima calibração. A
+   próxima data é calculada pelo servidor, nunca digitada.
 
-Voltar para **descalibrado** cancela a solicitação e desvincula o pedido — a tela
-avisa antes.
+Calibrado **sem certificado** é afirmação sem prova: é o certificado que sustenta
+a validade numa auditoria. A tela exige o anexo, e `registrar_calibracao()`
+recusa no banco. (A importação em massa continua aceitando calibração sem PDF —
+lá o certificado é anexado depois, aqui não.)
+
+Voltar para **descalibrado** cancela a solicitação e desvincula a rastreabilidade
+— a tela avisa antes.
 
 Instrumento **inativo** não tem nenhum desses botões: ele pode estar não
 encontrado, em manutenção ou na sucata, e solicitar calibração dele não quer
 dizer nada. A trava não é só visual — `definir_status_workflow()` e
 `registrar_calibracao()` recusam instrumento inativo no banco. Reative no
-Inventário primeiro. Instrumento de **referência** também não tem esses botões,
-por outro motivo: ele não tem validade a vencer.
+Inventário primeiro.
 
-Referências ficam fora desta lista por padrão, com um **Mostrar referências** ao
-lado do **Mostrar inativos** para trazê-las de volta.
+**Referência.** Tela própria para os padrões de aferição, irmã da de Calibração e
+separada dela de propósito: padrão de referência não vence, não é cobrado e não
+entra na fila de trabalho — misturá-lo fazia a lista de calibração contar itens
+que nunca vão vencer.
+
+As colunas respondem a outra pergunta — não "quando vence", mas "quais padrões eu
+tenho e onde estão": **tag** (a rastreabilidade do padrão), **descrição**,
+**família** e **localização**, que mostra o setor e o nome de quem está com ele
+quando está emprestado, igual à tela de calibração. Um filtro de **inativos** com
+três posições — ocultar, incluir, apenas — porque padrão de referência também é
+inativado (danificado, vago, sucateado), e às vezes o que se quer ver é
+justamente a lista dos que saíram de uso.
 
 **Empréstimo.** Busque por tag ou descrição. Se o instrumento não puder sair, a
 tela diz o motivo antes de você preencher qualquer campo. Casual não pede termo;
@@ -393,6 +461,13 @@ Os destinatários vêm de **Administração → E-mails por setor**; sem e-mail
 cadastrado o botão fica desabilitado e diz por quê. Metrologista também notifica;
 cadastrar e alterar é do administrador.
 
+> **Onde se edita o texto do e-mail:** em `config.js`, no bloco
+> `EMAIL_COBRANCA` — assunto, saudação, abertura, o modelo de cada linha da
+> lista, o fechamento e a assinatura, cada um num campo, com os marcadores
+> (`{setor}`, `{responsavel}`, `{tag}`, `{dias}`…) documentados ali mesmo. A
+> montagem fica em `pages/emprestimo.js`, na função `montarEmail()`; para mudar
+> só a redação, não é preciso abrir esse arquivo.
+
 A aba **Histórico** guarda todas as saídas e devoluções já registradas, com filtro
 por período, tipo, situação (devolvidos, em aberto, fora do prazo) e busca livre.
 Exporta para Excel e para PDF, e o PDF carrega no cabeçalho o recorte aplicado.
@@ -404,6 +479,22 @@ RPC `registrar_devolucao` — não há `UPDATE` direto em `movimentacoes` pela A
 TMMDE ou Referência; o KPI **Referências** leva direto ao recorte. Inativar abre um
 modal com motivo e justificativa obrigatórios — os dois vão para a auditoria.
 
+**Quando dá para inativar.** Só instrumento **calibrado** ou **descalibrado**, e
+só se **não estiver emprestado**:
+
+| Situação | Inativa? | Por quê |
+|---|---|---|
+| Calibrado ou descalibrado, na prateleira | sim | — |
+| Emprestado | não | está na mão de outro setor; declarar segregado o que não voltou é registrar uma coisa e ter outra na prateleira |
+| Calibração solicitada | não | existe pedido aberto; inativar abandona a solicitação no meio sem cancelá-la |
+| Em calibração externa | não | o instrumento está no laboratório |
+| Referência | sim | não participa do fluxo de calibração — nela vale só a regra do empréstimo |
+
+O botão fica **desabilitado com o motivo no título**, em vez de sumir: quem
+procura "Inativar" e não acha conclui que o sistema quebrou; quem lê "está
+emprestado para Fulano" sabe o que fazer em seguida. A trava de verdade está em
+`inativar_instrumento()`, no banco.
+
 Os motivos vêm do parâmetro `motivos_inativacao` e saem de fábrica assim:
 sucateado, vago, não entregue, danificado, **não encontrado**, **necessário
 manutenção** e **outros**. "Outros" é a saída de emergência da lista e tem
@@ -412,6 +503,23 @@ segregação** — onde o instrumento foi parar e como está identificado — qu
 na justificativa gravada na auditoria, prefixada por `Segregação:`.
 
 Instrumento de referência é inativado pelo mesmo caminho, com os mesmos campos.
+
+**Arquivos.** Uma pasta por equipamento. Os documentos sempre existiram, mas cada
+um morava numa coluna de uma tabela diferente — certificado em `calibracoes`,
+termo em `movimentacoes`, foto em `inspecoes` — visíveis só dentro da linha do
+tempo do instrumento. Ótimo para contar a história, péssimo para responder "cadê
+o certificado do P-PAQ-03".
+
+Aqui cada instrumento é uma pasta que abre e fecha, com subpastas por tipo
+(certificados, laudos, fotos, termos) e um resumo na etiqueta. Filtre por tag,
+instrumento ou nome do arquivo, recorte por tipo de documento, e ligue **Mostrar
+pastas vazias** para achar os instrumentos que ainda não têm nenhum documento
+anexado — a pergunta que aparece na véspera da auditoria. O mesmo bloco de
+arquivos aparece na ficha de cada instrumento.
+
+Os arquivos sobem para `<bucket>/<tag>/<data>-<nome>`, então a pasta existe dos
+dois lados: nesta tela e no painel do Supabase. Os links são assinados na hora do
+clique — os buckets são privados, não existe URL pública.
 
 **Relatórios.** Filtros aplicados no servidor, prévia na tela, exportação para
 Excel e para PDF. Há atalhos para os recortes mais pedidos (vencidos hoje,
@@ -437,18 +545,33 @@ sem ganho numa equipe de metrologia.
 | Registrar calibração | sim | sim |
 | Emprestar e registrar devolução | sim | sim |
 | Alterar periodicidade (com justificativa) | sim | sim |
-| Inativar / reativar instrumento | **não** | sim |
+| Inativar / reativar instrumento (com justificativa) | sim | sim |
 | **Apagar** instrumentos | **não** | sim |
 | Notificar setor sobre devolução em atraso | sim | sim |
 | Alterar parâmetros do sistema | **não** | sim |
 | Cadastrar e-mails por setor | **não** | sim |
 | Gerenciar papéis e acessos | **não** | sim |
 
+**Inativar não é do administrador, e isso é proposital.** Quem abre a gaveta, não acha o
+instrumento e precisa registrar o fato é o metrologista. Exigir um administrador para
+essa operação não protegia nada — só adiava o registro, e inventário que se registra
+depois é inventário que não se registra. O que protege continua valendo: motivo
+obrigatório, justificativa obrigatória e tudo na auditoria com e-mail e data. **Apagar**,
+esse sim, segue exclusivo do administrador: inativar preserva o histórico, apagar destrói.
+
 ### Pela tela — `Administração → Usuários`
 
-A aba aparece no menu só para quem é `admin`. Ali dá para trocar o papel
-de qualquer pessoa e bloquear ou liberar o acesso, com a mudança indo para
-a trilha de auditoria.
+A aba aparece no menu só para quem é `admin`. Ali dá para escrever o **nome** de cada
+pessoa, trocar o papel e bloquear ou liberar o acesso, com a mudança indo para a trilha
+de auditoria.
+
+O nome merece uma linha à parte porque ele aparece em quatro lugares: a saudação do
+painel ("Olá, João. Tudo sob controle?"), o cabeçalho, a assinatura do e-mail de cobrança
+e o "emitido por" dos relatórios em PDF. Como o perfil nasce do e-mail, ele começa como
+`joao` — o sistema corrige a caixa e os acentos que reconhece (`nomeProprio()`, em
+`utils.js`), mas **acento não se deduz**: "sergio" tanto pode ser Sérgio quanto Sergio.
+A lista de nomes conhecidos está lá para ser aumentada; o conserto definitivo é escrever
+o nome completo neste campo.
 
 Duas travas propositais, que valem tanto na tela quanto na API:
 
@@ -522,17 +645,68 @@ desligar e religar os gatilhos append-only para limpar a própria auditoria.
 
 ## Os gráficos do painel
 
-Três, e cada um responde uma pergunta diferente. Todos em SVG escrito à mão
+Quatro, e cada um responde uma pergunta diferente. Todos em SVG escrito à mão
 (`components/graficos.js`) — nenhuma biblioteca de gráficos entra no projeto.
 
 | Gráfico | Pergunta que responde |
 |---|---|
-| **Arco de situação** | Como está o acervo agora? |
+| **Arco de situação** | Como está o acervo ativo agora? |
 | **Carga por mês** | Quantas calibrações caem em cada um dos próximos 6 meses? Serve para negociar agenda com o laboratório. |
+| **Instrumentos inativos** | Quanto do acervo está fora de uso, e por quê? |
 | **Pareto por família** | Onde atacar primeiro? A linha acumulada mostra quantas famílias resolvem 80% das pendências. |
 
 Cada um tem uma **tabela-gêmea** embutida (*"Ver os números em tabela"*): nenhum
 valor depende de enxergar cor ou de acertar o mouse num ponto.
+
+### A tinta dos gráficos é a paleta institucional
+
+Onde a cor **não** carrega significado — barras de série única, linha de acumulado, grade
+e eixo — ela vem direto do padrão Perpec, sem tom inventado no meio do caminho:
+
+| Token | Cor | Onde aparece |
+|---|---|---|
+| `--serie` | `#3F415B` · Pantone 5265 C | barras: carga por mês, inativos, Pareto |
+| `--serie-2` | `#E6332C` · Pantone 179 C | linha e pontos do acumulado do Pareto |
+| `--grid` | `#EDEDED` · Pantone 663 C | grade em fio de cabelo |
+| `--eixo` | `#3F3F3E` · Pantone 446 C | linha de base (o zero) |
+
+Azul-marinho e vermelho vivo é o par de maior separação da paleta: barra e linha
+acumulada não se confundem nem impressas em preto e branco, porque a diferença de
+luminosidade é grande.
+
+**O semáforo não usa esta paleta, e não é esquecimento.** Verde e âmbar não existem no
+padrão Perpec — e sem eles não há como dizer "calibrado", "vencendo" e "descalibrado" pela
+cor. No semáforo a cor é informação; na tinta de gráfico, é identidade. Os dois sistemas
+convivem: o anel de situação fala em semáforo, as barras falam em Perpec.
+
+### Três denominadores, e cada gráfico usa o seu
+
+Confundir os três é a forma mais fácil de publicar um percentual errado:
+
+| Recorte | O que é | Quem usa |
+|---|---|---|
+| **acervo ativo** | tudo em uso, **referência incluída** | arco de situação |
+| **sob controle** | só os TMMDE, que são os que vencem | carga por mês, Pareto |
+| **acervo inteiro** | ativos + inativos | gráfico de inativos |
+
+**Referência entra no anel.** Padrão de aferição é instrumento ativo do acervo — deixá-lo
+de fora fazia o número do centro (acervo ativo) não fechar com a soma dos gomos. Ele é
+gomo próprio, em teal, porque "referência" não é uma situação de calibração: é uma
+classificação, e a situação dela é não ter validade a vencer.
+
+### O gráfico de inativos
+
+Duas leituras numa carta só, porque uma não vale sem a outra: o **percentual do acervo**
+que está fora de uso, em número grande, e a **estratificação por motivo** logo abaixo.
+12% inativo é fila de trabalho se o motivo for "necessário manutenção" e é problema de
+controle patrimonial se for "não encontrado" — o percentual sozinho não diz qual dos dois.
+
+Barras **deitadas**, porque os motivos são texto de tamanho variável ("Necessário
+manutenção") e, na vertical, virariam rótulo inclinado ou abreviado. Série única, cor
+única: o comprimento já carrega a informação, e pintar cada motivo de uma cor inventaria
+seis significados novos no semáforo que a aplicação já tem. Instrumento inativado sem
+motivo registrado (importação antiga) aparece como **"Sem motivo registrado"** em vez de
+sumir da conta.
 
 ### Por que meia-lua e não rosca fechada
 
@@ -555,9 +729,16 @@ ele entra somado a "calibrado", que é exatamente o que ele é: um instrumento
 válido com o relógio parado. Na tabela, na lista e no badge ele continua
 aparecendo com nome próprio.
 
-A ordem validada está em `ORDEM_GRAFICO`, em `components/status-badge.js`, com
-os números no comentário. **Se mexer nas cores do semáforo, rode o validador de
-novo antes de publicar.**
+**Referência entrou no fim da ordem**, e não no meio: azul (`#3D5AC0`), roxo (`#6D4AAE`)
+e teal (`#1F7A8C`) são os três tons que mais se aproximam sob deuteranopia, então o teal
+fica encostado só no verde de "calibrado" — par que se separa bem, porque sob
+deuteranopia o verde clareia para amarelado e o teal escurece para azul-acinzentado. O fim
+da fila também é a leitura certa: referência não é pendência. **Este par (teal/verde) é o
+mais apertado da lista — passe o validador nele antes de mexer na ordem.**
+
+A ordem está em `ORDEM_GRAFICO`, em `components/status-badge.js`, com o raciocínio no
+comentário. **Se mexer nas cores do semáforo, rode o validador de novo antes de
+publicar.**
 
 ---
 
@@ -678,4 +859,4 @@ O bloco final de `02_rls.sql` faz isso; rode-o de novo se necessário.
 
 ---
 
-*Perpec Oilfield Supply · FP-ENG-0018 · padrão de arquitetura do `KIT-INICIAL.md`*
+*Perpec Oilfield Supply · APP-MET-001 · padrão de arquitetura do `KIT-INICIAL.md`*

@@ -32,7 +32,13 @@ insert into public.config (chave, valor) values
   -- para o ÚLTIMO DIA do mês de vencimento. Calibrado em 20/08/2025 com
   -- periodicidade de 12 meses vence em 31/08/2026, não em 20/08/2026.
   -- 'nao' volta ao vencimento no dia exato.
-  ('vencimento_fim_do_mes', 'sim')
+  ('vencimento_fim_do_mes', 'sim'),
+
+  -- Horizonte do alerta de vencimento. 'sim': entra em âmbar tudo que
+  -- vence até o ÚLTIMO DIA DO MÊS QUE VEM — a pergunta que a metrologia
+  -- faz de fato ("o que tenho para resolver até fechar o mês que vem?").
+  -- 'nao': volta a valer a janela em dias de 'dias_proximo_vencimento'.
+  ('alerta_vencimento_proximo_mes', 'sim')
 on conflict (chave) do nothing;
 
 -- ---------------------------------------------------------------------

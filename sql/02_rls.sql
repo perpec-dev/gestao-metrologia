@@ -23,8 +23,16 @@ grant select (id, email, nome, papel, ativo, criado_em) on public.profiles to au
 grant update (nome)                                     on public.profiles to authenticated;
 
 -- CONFIG -------------------------------------------------------------
+-- O INSERT também é concedido: a tela grava parâmetro com upsert, porque
+-- a chave pode nunca ter sido semeada — e um UPDATE que não acha linha
+-- "dá certo" sem gravar nada. Sem este grant, alterar qualquer parâmetro
+-- (prazos, setores, motivos de inativação) voltava "operação bloqueada
+-- pelo banco" mesmo para administrador. As duas políticas exigem admin.
+-- A rota preferida hoje é a RPC salvar_config, que não depende deste
+-- grant sobreviver à próxima manutenção deste arquivo.
 grant select (chave, valor) on public.config to authenticated;
 grant update (valor)        on public.config to authenticated;   -- policy limita a admin
+grant insert (chave, valor) on public.config to authenticated;   -- policy limita a admin
 
 -- FAMÍLIAS -----------------------------------------------------------
 -- Sem update de periodicidade: só a RPC alterar_periodicidade (security
@@ -97,6 +105,8 @@ grant execute on function public.meu_email()   to authenticated;
 grant execute on function public.cfg_int(text,int) to authenticated;
 grant execute on function public.cfg_txt(text,text) to authenticated;
 grant execute on function public.cfg_bool(text,boolean) to authenticated;
+grant execute on function public.salvar_config(text,text) to authenticated;
+grant execute on function public.limite_alerta_vencimento() to authenticated;
 grant execute on function public.gerar_tag(uuid,text) to authenticated;
 grant execute on function public.calcular_data_proxima(uuid,date,boolean) to authenticated;
 grant execute on function public.criar_instrumento_completo(jsonb,jsonb,jsonb) to authenticated;
@@ -141,6 +151,10 @@ create policy config_ler on public.config
 drop policy if exists config_alterar on public.config;
 create policy config_alterar on public.config
   for update to authenticated using (public.sou_admin()) with check (public.sou_admin());
+
+drop policy if exists config_criar on public.config;
+create policy config_criar on public.config
+  for insert to authenticated with check (public.sou_admin());
 
 -- FAMÍLIAS
 drop policy if exists fam_ler on public.familias;

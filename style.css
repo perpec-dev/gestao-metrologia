@@ -55,8 +55,27 @@
      com o vermelho, porque não é pendência: é classificação. */
   --status-referencia:#1F7A8C;          --status-referencia-bg:#E8F3F6;
 
-  /* Tinta de gráfico — recessiva por definição. */
-  --grid:#EEEAE4; --eixo:#CFC8BF; --serie:#3D5AC0; --serie-2:#7C746D;
+  /* ---------------------------------------------------------------
+     TINTA DE GRÁFICO — paleta institucional Perpec.
+
+     Aqui não há semântica: são séries e eixos, e por isso saem direto
+     da paleta da marca, sem tom inventado no meio do caminho.
+
+       --serie    Pantone 5265 C  #3F415B   série única (as barras)
+       --serie-2  Pantone 179 C   #E6332C   linha acumulada do Pareto
+       --grid     Pantone 663 C   #EDEDED   grade, fio de cabelo
+       --eixo     Pantone 446 C   #3F3F3E   linha de base (o zero)
+
+     A dupla azul-marinho + vermelho vivo é o par de maior separação da
+     paleta: barra e linha acumulada nunca se confundem, nem impressas
+     em preto e branco, porque a diferença de luminosidade é grande.
+
+     O SEMÁFORO (--status-*, mais acima) NÃO usa esta paleta, e não é
+     esquecimento: verde e âmbar não existem no padrão Perpec, e sem eles
+     não há como dizer "calibrado", "vencendo" e "descalibrado" pela cor.
+     Ali a cor carrega significado; aqui, só identidade.
+     --------------------------------------------------------------- */
+  --grid:#EDEDED; --eixo:#3F3F3E; --serie:#3F415B; --serie-2:#E6332C;
 }
 
 html{-webkit-text-size-adjust:100%}
@@ -402,6 +421,10 @@ details.card[open] .chevron svg{transform:rotate(180deg);stroke:var(--red)}
 .g-base{stroke:var(--eixo);stroke-width:1}
 .g-hero{font-size:35px;font-weight:700;fill:var(--dark);letter-spacing:-.03em}
 .g-hero-sub{font-size:11px;fill:var(--muted);font-weight:650}
+/* Mesmo número-herói, fora do SVG: o gráfico de inativos abre com o
+   percentual em HTML, ao lado da frase que o explica. */
+.g-hero-num{font-size:32px;font-weight:700;color:var(--dark);letter-spacing:-.03em;
+            line-height:1;font-variant-numeric:tabular-nums;flex-shrink:0}
 
 /* Foco por realce: ao passar o mouse, as demais marcas recuam.
    O alvo é a faixa inteira, nunca um alvo de precisão. */
@@ -569,6 +592,35 @@ table.tbl input[type=checkbox]{width:16px;height:16px;accent-color:var(--red);cu
 .tl-titulo{font-size:13.5px;font-weight:650;color:var(--dark);margin-top:2px}
 .tl-detalhe{font-size:12.5px;color:var(--text2);margin-top:3px;line-height:1.55}
 .tl-autor{font-size:11.5px;color:var(--muted);margin-top:4px}
+
+/* =====================================================================
+   ARQUIVOS — a pasta de cada equipamento
+
+   Pasta é metáfora de arquivo físico, e é assim que ela se comporta: o
+   cartão fechado mostra a etiqueta (tag, instrumento e o que tem
+   dentro); aberto, as subpastas por tipo de documento. Nada de miniatura
+   ou grade de ícones — o que se procura aqui é um documento específico,
+   não uma galeria.
+   ===================================================================== */
+.pasta > summary .mono{margin-right:2px}
+.arqs{display:flex;flex-direction:column;gap:14px}
+.arq-grupo{border:1px solid var(--border);border-radius:var(--r);background:var(--surface2);
+           overflow:hidden}
+.arq-grupo-cab{display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--surface3);
+               font-size:12px;color:var(--text2);border-bottom:1px solid var(--border)}
+.arq-grupo-cab svg{width:14px;height:14px;stroke:var(--red);fill:none;stroke-width:1.9;
+                   stroke-linecap:round;stroke-linejoin:round;flex-shrink:0}
+.arq-grupo-cab b{font-size:12px;font-weight:700;color:var(--dark);letter-spacing:.01em}
+.arq-qtd{margin-left:auto;font-size:11px;font-weight:700;color:var(--muted);background:var(--surface);
+         border:1px solid var(--border);border-radius:99px;padding:1px 8px;
+         font-variant-numeric:tabular-nums}
+.arq-item{display:flex;align-items:center;gap:12px;padding:9px 12px;background:var(--surface);
+          border-top:1px solid var(--hair)}
+.arq-item:first-of-type{border-top:none}
+.arq-txt{min-width:0;flex:1}
+.arq-nome{font-size:13px;font-weight:600;color:var(--text);word-break:break-word}
+.arq-meta{font-size:11px;color:var(--muted);margin-top:2px;word-break:break-all}
+.arq-path{font-family:ui-monospace,"Cascadia Mono",Consolas,monospace;font-size:10.5px}
 
 /* =====================================================================
    AUTOCOMPLETE

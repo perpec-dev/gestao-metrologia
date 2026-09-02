@@ -8,12 +8,13 @@
    Tudo sai de vw_instrumentos_status e vw_emprestimos_abertos, com
    Realtime nas duas pontas.
    ===================================================================== */
-import { esc, fmtData, fmtDT, toast, msgErro, debounce,
-         htmlCarregando, htmlVazio, lembrar, lembrado, p2, animarNumero } from '../utils.js';
-import { listarInstrumentos, listarEmprestimosAbertos, ouvir, cfgInt } from '../supabase.js';
+import { esc, fmtData, fmtDT, toast, msgErro, debounce, htmlCarregando, htmlVazio,
+         lembrar, lembrado, p2, animarNumero, primeiroNome } from '../utils.js';
+import { listarInstrumentos, listarEmprestimosAbertos, ouvir,
+         limiteAlertaVencimento, cfgBool } from '../supabase.js';
 import { badge, legenda, textoVencimento, STATUS,
          ORDEM_GRAFICO, ORDEM_STATUS_TMMDE } from '../components/status-badge.js';
-import { arcoSituacao, barrasVencimento, pareto } from '../components/graficos.js';
+import { arcoSituacao, barrasVencimento, pareto, motivosInativos } from '../components/graficos.js';
 import { irPara } from '../router.js';
 import { meuNome } from '../auth.js';
 
@@ -27,14 +28,16 @@ export function destroy(){
 
 export async function render(container){
   elRaiz = container;
-  const primeiroNome = (meuNome() || '').trim().split(/\s+/)[0] || '';
+  // meuNome() já devolve o nome normalizado — "joao" vira "João" lá, e
+  // não aqui, para que cabeçalho, PDF e e-mail escrevam o mesmo nome.
+  const nome = primeiroNome(meuNome());
 
   container.innerHTML = `
     <header style="display:flex;align-items:flex-end;justify-content:space-between;
                    flex-wrap:wrap;gap:10px;margin-bottom:1.5rem">
       <div>
         <h1 style="font-size:22px;font-weight:680;letter-spacing:-.025em">
-          ${primeiroNome ? 'Bom trabalho, ' + esc(primeiroNome) + '.' : 'Painel da metrologia'}</h1>
+          ${nome ? 'Olá, ' + esc(nome) + '. Tudo sob controle?' : 'Tudo sob controle?'}</h1>
         <p style="font-size:13px;color:var(--muted);margin-top:3px" id="resumoLinha"></p>
       </div>
       <div style="font-size:12px;color:var(--muted)" id="atualizadoEm"></div>
@@ -66,10 +69,20 @@ async function carregar(silencioso = false){
     return;
   }
 
-  const ativos = instrumentos.filter(i => i.condicao_fisica === 'ativo');
-  /* O painel é a fila de trabalho da calibração. Padrão de referência
-     não vence, não é cobrado e não entra em nenhum indicador daqui —
-     se entrasse, o total do anel nunca fecharia com a soma dos gomos. */
+  /* Três recortes do acervo, e cada gráfico usa o seu:
+
+       ativos      — tudo que está em uso, referência incluída. É a base
+                     do anel de situação: padrão de aferição é
+                     instrumento ativo, e deixá-lo fora fazia o total do
+                     anel não bater com o acervo.
+       sobControle — os TMMDE, únicos que vencem. É a base da carga por
+                     mês e do Pareto: referência nunca entra numa fila
+                     de calibração.
+       inativos    — fora de uso, com motivo registrado. Base do quarto
+                     gráfico, e o único recorte que olha o acervo
+                     inteiro como denominador. */
+  const ativos      = instrumentos.filter(i => i.condicao_fisica === 'ativo');
+  const inativos    = instrumentos.filter(i => i.condicao_fisica === 'inativo');
   const referencias = ativos.filter(i => i.tipo === 'REFERENCIA');
   const sobControle = ativos.filter(i => i.tipo !== 'REFERENCIA');
   const por = s => sobControle.filter(i => i.status_efetivo === s);
@@ -81,13 +94,23 @@ async function carregar(silencioso = false){
   const standby       = por('standby_pausado');
   const solicitados   = por('solicitado');
   const externas      = por('em_calibracao_externa');
-  const janela        = cfgInt('dias_proximo_vencimento', 15);
 
-  indicadores({ ativos: sobControle, referencias, instrumentos, descalibrados, proximos,
-                calibrados, standby, solicitados, externas, emprestimos, janela });
-  graficos({ ativos: sobControle, descalibrados, proximos, calibrados, standby,
-             solicitados, externas });
-  listas({ alvo, descalibrados, proximos, emprestimos, janela });
+  /* Até quando vai o alerta. Por padrão, o último dia do MÊS QUE VEM —
+     a metrologia fecha o mês, e a pergunta de segunda-feira é "o que
+     preciso resolver até fechar o mês que vem?", não "o que vence em 15
+     dias". Quem decide a cor de cada instrumento continua sendo o banco
+     (public.limite_alerta_vencimento); aqui a data serve só de rótulo. */
+  const limite = limiteAlertaVencimento();
+  // O rótulo acompanha o parâmetro: desligado o alerta mensal, "fim do
+  // próximo mês" viraria mentira em cima de uma data correta.
+  const alerta = `até ${fmtData(limite)}` +
+    (cfgBool('alerta_vencimento_proximo_mes', true) ? ' — fim do próximo mês' : '');
+
+  indicadores({ ativos, sobControle, referencias, inativos, descalibrados, proximos,
+                calibrados, standby, solicitados, externas, emprestimos, alerta });
+  graficos({ ativos, sobControle, referencias, inativos, acervo: instrumentos.length,
+             descalibrados, proximos, calibrados, standby, solicitados, externas });
+  listas({ alvo, descalibrados, proximos, emprestimos, alerta });
 
   const d = new Date();
   elRaiz.querySelector('#atualizadoEm').textContent =
@@ -104,15 +127,15 @@ function indicadores(d){
 
   el.innerHTML = `
     <button class="kpi c-total" data-ir="">
-      <div class="k">Sob controle</div><div class="v">${d.ativos.length}</div>
-      <div class="d">${d.referencias.length} referência(s) · ${
-        d.instrumentos.length - d.ativos.length - d.referencias.length} inativo(s) fora da conta</div></button>
+      <div class="k">Acervo ativo</div><div class="v">${d.ativos.length}</div>
+      <div class="d">${d.sobControle.length} sob controle · ${d.referencias.length} referência(s)
+        · ${d.inativos.length} inativo(s) fora da conta</div></button>
     <button class="kpi c-descalibrado" data-ir="descalibrado">
       <div class="k">Descalibrados</div><div class="v">${d.descalibrados.length}</div>
       <div class="d">não podem ser emprestados</div></button>
     <button class="kpi c-proximo" data-ir="proximo_vencimento">
       <div class="k">Vencendo</div><div class="v">${d.proximos.length}</div>
-      <div class="d">nos próximos ${d.janela} dias</div></button>
+      <div class="d">${esc(d.alerta)}</div></button>
     <button class="kpi c-externa" data-ir="em_calibracao_externa">
       <div class="k">Em laboratório</div><div class="v">${d.externas.length + d.solicitados.length}</div>
       <div class="d">${d.solicitados.length} solicitada(s), ${d.externas.length} enviada(s)</div></button>
@@ -132,19 +155,25 @@ function indicadores(d){
 /* ==================================================================== */
 function graficos(d){
   const el = elRaiz.querySelector('#graficos');
-  el.innerHTML = `<div id="gArco"></div><div id="gMeses"></div><div id="gPareto"></div>`;
+  el.innerHTML = `<div id="gArco"></div><div id="gMeses"></div>
+                  <div id="gInativos"></div><div id="gPareto"></div>`;
 
   /* --- 1. Arco de situação -------------------------------------------
      'standby_pausado' entra somado a 'calibrado': é exatamente isso que
      ele é — instrumento válido com o relógio parado. Como cinza de croma
      0,02 ele reprova no piso do validador e viraria uma mancha morta no
-     anel; como rótulo, na tabela e na lista, ele continua existindo. */
+     anel; como rótulo, na tabela e na lista, ele continua existindo.
+
+     'referencia' é gomo próprio: padrão de aferição é instrumento ativo
+     do acervo, e não uma situação de calibração. Sem ele, o número do
+     centro do anel (acervo ativo) não fechava com a soma dos gomos. */
   const contagem = {
     descalibrado:          d.descalibrados.length,
     em_calibracao_externa: d.externas.length,
     proximo_vencimento:    d.proximos.length,
     solicitado:            d.solicitados.length,
-    calibrado:             d.calibrados.length + d.standby.length
+    calibrado:             d.calibrados.length + d.standby.length,
+    referencia:            d.referencias.length
   };
   arcoSituacao(el.querySelector('#gArco'), {
     total: d.ativos.length,
@@ -153,7 +182,9 @@ function graficos(d){
       chave: s,
       rotulo: s === 'calibrado' && d.standby.length
         ? `Calibrado (${d.standby.length} em standby)`
-        : STATUS[s].rotulo,
+        : s === 'referencia'
+          ? 'Referência (sem validade a vencer)'
+          : STATUS[s].rotulo,
       cor: STATUS[s].cor,
       valor: contagem[s]
     }))
@@ -171,15 +202,32 @@ function graficos(d){
              rotuloLongo: MES_LONGO[m.getMonth()] + ' de ' + m.getFullYear(),
              valor: 0 };
   });
-  d.ativos.forEach(i => {
+  // Só quem tem validade a vencer entra na carga: referência não tem
+  // data_proxima, e contá-la no denominador diluiria o percentual.
+  d.sobControle.forEach(i => {
     if (!i.data_proxima) return;
     const [a, m] = i.data_proxima.split('-').map(Number);
     const alvo = meses.find(x => x.ano === a && x.mes === m - 1);
     if (alvo) alvo.valor++;
   });
-  barrasVencimento(el.querySelector('#gMeses'), { meses, totalAtivos: d.ativos.length });
+  barrasVencimento(el.querySelector('#gMeses'), { meses, totalAtivos: d.sobControle.length });
 
-  /* --- 3. Pareto por família ----------------------------------------- */
+  /* --- 3. Inativos: quanto e por quê ---------------------------------
+     O denominador aqui é o acervo INTEIRO, não o ativo: "12% do acervo
+     está fora de uso" só quer dizer alguma coisa se os inativos
+     estiverem dentro da conta. */
+  const porMotivo = new Map();
+  d.inativos.forEach(i => {
+    const k = (i.motivo_inativo || '').trim() || 'Sem motivo registrado';
+    porMotivo.set(k, (porMotivo.get(k) || 0) + 1);
+  });
+  motivosInativos(el.querySelector('#gInativos'), {
+    motivos: [...porMotivo.entries()].map(([rotulo, valor]) => ({ rotulo, valor })),
+    inativos: d.inativos.length,
+    acervo: d.acervo
+  });
+
+  /* --- 4. Pareto por família ----------------------------------------- */
   const pendentes = [...d.descalibrados, ...d.proximos];
   const mapa = new Map();
   pendentes.forEach(i => {
@@ -188,7 +236,7 @@ function graficos(d){
     mapa.get(k).valor++;
   });
   pareto(el.querySelector('#gPareto'), {
-    familias: [...mapa.values()], totalAtivos: d.ativos.length });
+    familias: [...mapa.values()], totalAtivos: d.sobControle.length });
 }
 
 /* ==================================================================== */
@@ -216,7 +264,7 @@ function cardLista({ id, icone, titulo, resumo, itens }){
     </details>`;
 }
 
-function listas({ alvo, descalibrados, proximos, emprestimos, janela }){
+function listas({ alvo, descalibrados, proximos, emprestimos, alerta }){
   const alertas  = emprestimos.filter(m => m.em_alerta);
   const externos = emprestimos.filter(m => m.tipo === 'externo');
 
@@ -240,7 +288,7 @@ function listas({ alvo, descalibrados, proximos, emprestimos, janela }){
       ? cardLista({
           id:'proximos',
           icone:'<path d="M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20ZM12 6v6l4 2"/>',
-          titulo:`Vencem nos próximos ${janela} dias`,
+          titulo:`Vencem ${alerta}`,
           resumo: maisUrgente != null
             ? (maisUrgente <= 0 ? 'o primeiro vence hoje' : `o primeiro em ${maisUrgente} d`)
             : '',

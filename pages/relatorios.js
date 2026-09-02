@@ -394,7 +394,7 @@ async function exportarPDF(container){
       footer: (pagina, total) => ({
         margin: [28, 8, 28, 0],
         columns: [
-          { text:`${CONFIG.EMPRESA}  •  ${CONFIG.DOC_REF}`, fontSize:6.5, italics:true, color:'#AAA5A0' },
+          { text:`${CONFIG.EMPRESA}  •  ${CONFIG.APP_REF}`, fontSize:6.5, italics:true, color:'#AAA5A0' },
           { text:`Página ${pagina} de ${total}`, fontSize:6.5, color:'#AAA5A0', alignment:'right' }
         ]
       }),

@@ -38,7 +38,7 @@
   <!-- Faixa preta: identidade Perpec e o estado do sistema num lugar só. -->
   <div class="doc-strip">
     <div class="doc-strip-inner">
-      <span class="doc-code-label">Documento</span><span class="doc-code-val" id="docRef">—</span>
+      <span class="doc-code-label">Aplicação</span><span class="doc-code-val" id="docRef">—</span>
       <span class="sep"></span>
       <!-- Só aparece quando há problema. Sistema saudável é silencioso. -->
       <span class="conn" id="conexao"><span class="dot"></span><span id="conexaoTxt"></span></span>
@@ -61,14 +61,14 @@
 
 <script type="module">
 import { CONFIG } from './config.js';
-import { exigirSessao, vigiarSessao, sair, perfil, souAdmin } from './auth.js';
+import { exigirSessao, vigiarSessao, sair, perfil, souAdmin, meuNome } from './auth.js';
 import { carregarConfig, configFaltando, ouvir, listarInstrumentos } from './supabase.js';
 import { montarNav, iniciarRouter, contadorNav } from './router.js';
 import { p2, toast, msgErro } from './utils.js';
 
 /* ---- Identidade da tela ---- */
-document.getElementById('docRef').textContent    = CONFIG.DOC_REF;
-document.getElementById('ftDoc').textContent     = CONFIG.DOC_REF;
+document.getElementById('docRef').textContent    = CONFIG.APP_REF;
+document.getElementById('ftDoc').textContent     = CONFIG.APP_REF;
 document.getElementById('ftEmpresa').textContent = CONFIG.EMPRESA;
 document.getElementById('appNome').textContent   = CONFIG.APP_NOME;
 document.getElementById('appSub').textContent    = CONFIG.APP_SUB;
@@ -130,7 +130,10 @@ async function atualizarContadores(){
           '\nA tela segue com os valores padrão.', 'error');
   }
 
-  document.getElementById('usuarioNome').textContent = p.nome || p.email;
+  // meuNome() normaliza a caixa e os acentos conhecidos: o perfil nasce
+  // do e-mail, e "joao" no cabeçalho é o sistema chamando a pessoa pelo
+  // login. O nome definitivo se escreve em Administração › Usuários.
+  document.getElementById('usuarioNome').textContent = meuNome() || p.email;
   const elPapel = document.getElementById('usuarioPapel');
   elPapel.textContent = souAdmin() ? 'Administrador' : 'Metrologista';
   elPapel.className = 'papel' + (souAdmin() ? ' admin' : '');

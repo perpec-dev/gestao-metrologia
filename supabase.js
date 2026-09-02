@@ -45,7 +45,8 @@ export const PADROES_CONFIG = {
   prazo_alerta_emprestimo_externo_dias: '7',
   motivos_inativacao:
     'Sucateado,Vago,Não entregue,Danificado,Não encontrado,Necessário manutenção,Outros',
-  vencimento_fim_do_mes: 'sim'
+  vencimento_fim_do_mes: 'sim',
+  alerta_vencimento_proximo_mes: 'sim'
 };
 
 /** Motivo que exige descrever a segregação do instrumento na justificativa. */
@@ -80,14 +81,37 @@ export const cfgBool  = (chaveCfg, padrao = false) =>
   ['sim','s','true','1','yes'].includes(
     String(cfg(chaveCfg, padrao ? 'sim' : 'nao')).trim().toLowerCase());
 
-/** upsert, não update: se a chave nunca foi semeada, UPDATE afeta zero
-    linhas e "dá certo" sem gravar nada — o pior tipo de sucesso. */
+/**
+ * Gravação de parâmetro pela RPC salvar_config (security definer, exige
+ * papel admin no banco).
+ *
+ * Antes isto era um upsert direto na tabela — e upsert é INSERT, que
+ * depende de um GRANT que o 02_rls.sql revoga toda vez que roda. O
+ * resultado era um administrador recebendo "operação bloqueada pelo
+ * banco" sem nenhum motivo visível na tela. Pela RPC, a permissão é uma
+ * regra escrita uma vez, não um efeito colateral da ordem em que os
+ * arquivos de SQL foram executados.
+ */
 export async function salvarConfig(chaveCfg, valor){
-  ok(await sb.from('config')
-       .upsert({ chave: chaveCfg, valor: String(valor) }, { onConflict: 'chave' })
-       .select());
+  ok(await sb.rpc('salvar_config', { p_chave: chaveCfg, p_valor: String(valor) }));
   if (!_config) _config = {};
   _config[chaveCfg] = String(valor);
+}
+
+/**
+ * Até quando vai o alerta de vencimento — mesma conta de
+ * public.limite_alerta_vencimento(), refeita aqui só para escrever a
+ * data nos rótulos ("vencem até 31/10/2026"). Quem decide a cor de cada
+ * instrumento continua sendo o banco.
+ * @returns {Date}
+ */
+export function limiteAlertaVencimento(){
+  const hoje = new Date();
+  if (cfgBool('alerta_vencimento_proximo_mes', true))
+    return new Date(hoje.getFullYear(), hoje.getMonth() + 2, 0);   // dia 0 = último do mês anterior
+  const d = new Date(hoje);
+  d.setDate(d.getDate() + cfgInt('dias_proximo_vencimento', 15));
+  return d;
 }
 
 /* ===================================================================
@@ -282,20 +306,56 @@ export const listarDocumentos = async instrumentoId =>
   ok(await sb.from('documentos').select('*').eq('instrumento_id', instrumentoId)
        .order('criado_em', { ascending:false }));
 
+/* ===================================================================
+   ARQUIVOS — a pasta de cada equipamento
+
+   vw_arquivos junta o que estava espalhado em quatro tabelas
+   (certificado e laudo em calibracoes, foto em inspecoes, termo em
+   movimentacoes, o resto em documentos) numa lista só, com tag e tipo.
+   =================================================================== */
+export const listarArquivos = async () =>
+  ok(await sb.from('vw_arquivos').select('*').order('tag').order('quando', { ascending:false }));
+
+export const listarArquivosInstrumento = async instrumentoId =>
+  ok(await sb.from('vw_arquivos').select('*')
+       .eq('instrumento_id', instrumentoId).order('quando', { ascending:false }));
+
 export const anexarDocumento = async doc =>
   ok(await sb.from('documentos').insert(doc).select().single());
 
 /* ===================================================================
    STORAGE
+
+   Uma pasta por equipamento, dentro de cada bucket:
+
+     certificados/P-PAQ-03/2026-09-02-1432-certificado-rbc.pdf
+     termos/P-PAQ-03/2026-07-14-0910-termo-assinado.pdf
+
+   Antes o caminho era `ano/familia` ou `ano/tag`, e o nome do arquivo
+   começava com o timestamp em milissegundos — legível para a máquina e
+   para mais ninguém. Com a tag na frente, procurar "os arquivos do
+   P-PAQ-03" é abrir uma pasta, tanto na tela Arquivos quanto no painel
+   do Supabase. A data no nome mantém a ordem cronológica dentro dela.
    =================================================================== */
+
+/** Nome de pasta do instrumento no Storage. A tag JÁ é o identificador
+    do equipamento — só precisa passar por um filtro de caracteres. */
+export const pastaDoInstrumento = tag =>
+  String(tag || 'sem-tag').replace(/[^A-Za-z0-9._-]/g, '-');
+
 export async function enviarArquivo(bucket, arquivo, prefixo = ''){
   if (!arquivo) return null;
   const limiteMB = /^image\//.test(arquivo.type) ? CONFIG.MAX_MB_FOTO : CONFIG.MAX_MB_PDF;
   if (arquivo.size > limiteMB * 1024 * 1024)
     throw new Error(`Arquivo maior que ${limiteMB} MB. Comprima o documento antes de enviar.`);
 
+  const d  = new Date();
+  const p2 = n => String(n).padStart(2,'0');
+  const carimbo = `${d.getFullYear()}-${p2(d.getMonth()+1)}-${p2(d.getDate())}-` +
+                  `${p2(d.getHours())}${p2(d.getMinutes())}`;
+
   const caminho = (prefixo ? prefixo.replace(/\/+$/,'')+'/' : '') +
-                  Date.now() + '-' + nomeSeguro(arquivo.name);
+                  carimbo + '-' + nomeSeguro(arquivo.name);
   const { error } = await sb.storage.from(bucket).upload(caminho, arquivo, {
     cacheControl: '3600', upsert: false, contentType: arquivo.type || undefined
   });

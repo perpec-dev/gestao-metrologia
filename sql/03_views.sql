@@ -53,7 +53,12 @@ select
       then 'descalibrado'
     when c.data_proxima < current_date
       then 'descalibrado'
-    when c.data_proxima - current_date <= public.cfg_int('dias_proximo_vencimento', 15)
+    -- Horizonte de alerta: por padrão, tudo que vence até o último dia do
+    -- MÊS QUE VEM. A metrologia fecha o mês, não o dia — e o painel, a
+    -- lista de calibração e o contador da aba passam a falar a mesma
+    -- língua porque todos leem esta mesma função. Ver
+    -- public.limite_alerta_vencimento() em 01_schema.sql.
+    when c.data_proxima <= public.limite_alerta_vencimento()
       then 'proximo_vencimento'
     else 'calibrado'
   end                          as status_efetivo,
@@ -146,6 +151,64 @@ join public.instrumentos i on i.id = m.instrumento_id
 join public.familias f     on f.id = i.familia_id;
 
 alter view public.vw_emprestimos_historico set (security_invoker = on);
+
+-- ---------------------------------------------------------------------
+-- 2c. ARQUIVOS DO ACERVO  (a "pasta" de cada instrumento)
+--
+-- Os arquivos sempre estiveram no sistema, mas espalhados: o certificado
+-- mora numa coluna de `calibracoes`, o termo numa de `movimentacoes`, a
+-- foto numa de `inspecoes`, e o resto em `documentos`. Para achar "o
+-- certificado do P-PAQ-03" era preciso abrir a ficha e caçar na linha do
+-- tempo. Esta view junta os quatro numa lista só, com tag e tipo, e é o
+-- que a tela Arquivos usa para montar uma pasta por equipamento.
+--
+-- Nada aqui grava: é leitura sobre o que já existe. O caminho no Storage
+-- também passou a ser <tag>/<arquivo>, então a pasta existe dos dois
+-- lados — na tela e no painel do Supabase.
+-- ---------------------------------------------------------------------
+create or replace view public.vw_arquivos as
+  select c.instrumento_id, i.tag, i.descricao as instrumento,
+         'certificados'::text as bucket, c.certificado_path as arquivo_path,
+         'Certificado'::text  as tipo,
+         'Certificado · calibração de ' || to_char(c.data_calibracao,'DD/MM/YYYY') as nome,
+         c.criado_em as quando, c.criado_por_email as autor
+    from public.calibracoes c
+    join public.instrumentos i on i.id = c.instrumento_id
+   where coalesce(btrim(c.certificado_path),'') <> ''
+union all
+  select c.instrumento_id, i.tag, i.descricao,
+         'laudos', c.laudo_path, 'Laudo',
+         'Laudo · calibração de ' || to_char(c.data_calibracao,'DD/MM/YYYY'),
+         c.criado_em, c.criado_por_email
+    from public.calibracoes c
+    join public.instrumentos i on i.id = c.instrumento_id
+   where coalesce(btrim(c.laudo_path),'') <> ''
+union all
+  select ins.instrumento_id, i.tag, i.descricao,
+         'fotos', ins.foto_path, 'Foto',
+         coalesce(nullif(btrim(ins.laudo),''), 'Foto do instrumento'),
+         ins.criado_em, ins.criado_por_email
+    from public.inspecoes ins
+    join public.instrumentos i on i.id = ins.instrumento_id
+   where coalesce(btrim(ins.foto_path),'') <> ''
+union all
+  select m.instrumento_id, i.tag, i.descricao,
+         'termos', m.termo_path, 'Termo',
+         'Termo · ' || m.tipo || ' para ' || m.responsavel || ' (' || m.setor || ')',
+         m.data_saida, m.criado_por_email
+    from public.movimentacoes m
+    join public.instrumentos i on i.id = m.instrumento_id
+   where coalesce(btrim(m.termo_path),'') <> ''
+union all
+  select d.instrumento_id, i.tag, i.descricao,
+         d.bucket, d.arquivo_path, coalesce(nullif(btrim(d.tipo),''), 'Documento'),
+         coalesce(nullif(btrim(d.nome),''), 'Documento anexado'),
+         d.criado_em, d.criado_por_email
+    from public.documentos d
+    join public.instrumentos i on i.id = d.instrumento_id
+   where d.instrumento_id is not null;
+
+alter view public.vw_arquivos set (security_invoker = on);
 
 -- ---------------------------------------------------------------------
 -- 3. LINHA DO TEMPO  (um instrumento, todos os eventos)
@@ -306,16 +369,23 @@ end $$;
 -- 5. PERMISSÕES DAS VIEWS E DAS RPCs DESTE ARQUIVO
 -- ---------------------------------------------------------------------
 revoke all on public.vw_instrumentos_status, public.vw_emprestimos_abertos,
-              public.vw_emprestimos_historico, public.vw_timeline
+              public.vw_emprestimos_historico, public.vw_timeline,
+              public.vw_arquivos
          from anon, authenticated;
 
 grant select on public.vw_instrumentos_status    to authenticated;
 grant select on public.vw_emprestimos_abertos    to authenticated;
 grant select on public.vw_emprestimos_historico  to authenticated;
 grant select on public.vw_timeline               to authenticated;
+grant select on public.vw_arquivos               to authenticated;
 
 grant execute on function public.registrar_movimentacao(uuid,jsonb)     to authenticated;
 grant execute on function public.registrar_devolucao(uuid,text,text)    to authenticated;
+
+-- Último passo da instalação: recarregar o cache de esquema do PostgREST.
+-- Sem isto, uma função ou view recém-criada pode responder "not found" à
+-- tela por alguns minutos — e parece que a instalação falhou.
+notify pgrst, 'reload schema';
 
 -- =====================================================================
 -- DIAGNÓSTICO — descomente quando algo não bate

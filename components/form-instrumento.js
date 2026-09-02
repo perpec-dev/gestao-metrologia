@@ -13,9 +13,14 @@
                   localização, standby, inspeção visual e certificado.
      REFERÊNCIA — padrão de aferição. Cadastro enxuto: tag (que é a
                   rastreabilidade), descrição, fabricante, número de
-                  série, data de cadastro e observações. Sem exigência
-                  de calibração, então sem certificado, sem inspeção e
-                  sem relógio de validade.
+                  série, data de cadastro, foto e observações. Sem
+                  exigência de calibração, então sem certificado, sem
+                  inspeção de entrada e sem relógio de validade.
+
+   Obrigatórios nas duas classificações: descrição, fabricante, data e
+   FOTO. A foto vive no cartão de identificação, e não no de inspeção,
+   porque ela responde "é este mesmo o instrumento?" — pergunta que a
+   conferência de inventário faz sobre qualquer item do acervo.
 
    A tag é gerada pelo servidor (RPC gerar_tag) assim que família e
    classificação estão escolhidas, e regerada no momento de salvar —
@@ -23,7 +28,7 @@
    instrumento igual.
    ===================================================================== */
 import { esc, hojeISO, validador, limparErros, toast, msgErro } from '../utils.js';
-import { proximaTag, enviarArquivo, listarFamilias } from '../supabase.js';
+import { proximaTag, enviarArquivo, listarFamilias, pastaDoInstrumento } from '../supabase.js';
 import { CONFIG } from '../config.js';
 
 const campo = (id, rotulo, { tipo='text', req=false, dica='', extra='', classe='' } = {}) => `
@@ -34,9 +39,9 @@ const campo = (id, rotulo, { tipo='text', req=false, dica='', extra='', classe='
     <div class="msg" id="m${id}"></div>
   </div>`;
 
-const arquivo = (id, rotulo, aceita, dica) => `
-  <div class="field" id="w${id}">
-    <label>${esc(rotulo)}</label>
+const arquivo = (id, rotulo, aceita, dica, { req=false, classe='' } = {}) => `
+  <div class="field ${classe}" id="w${id}">
+    <label>${esc(rotulo)}${req ? '<span class="req">*</span>' : ''}</label>
     <div class="file" id="d${id}">
       <input type="file" id="f${id}" accept="${aceita}">
       <div class="txt">Clique ou arraste o arquivo aqui</div>
@@ -87,11 +92,17 @@ export function htmlFormInstrumento({ comDocumentos = true, comInspecao = true, 
 
       <div class="g2" style="margin-top:14px">
         ${campo('Descricao','Descrição',{ req:true, dica:'Ex.: Paquímetro digital 0–150 mm', classe:'full' })}
-        ${campo('Fabricante','Fabricante')}
+        ${campo('Fabricante','Fabricante',{ req:true, dica:'Quem fabricou. Entra no certificado e na conferência do inventário.' })}
         ${campo('NumSerie','Número de série')}
         ${campo('Resolucao','Resolução / faixa',{ dica:'Ex.: 0,01 mm · 0–25 mm' })}
         ${campo('Localizacao','Localização normal',{ dica:'Onde o instrumento fica guardado.' })}
         ${campo('DataEntrada','Data de entrada',{ tipo:'date', req:true })}
+        <!-- A foto é do CADASTRO, não da inspeção: ela identifica o
+             instrumento na conferência do inventário e vale para
+             referência também, que não passa por inspeção de entrada. -->
+        ${arquivo('Foto','Foto do instrumento','image/*',
+          'JPG ou PNG, até '+CONFIG.MAX_MB_FOTO+' MB. É por ela que se reconhece o instrumento na conferência.',
+          { req:true })}
         <div class="field field-inline full" id="wStandby" style="margin-top:4px">
           <input type="checkbox" id="fStandby">
           <label for="fStandby">Standby — instrumento guardado sem uso.
@@ -127,14 +138,14 @@ export function htmlFormInstrumento({ comDocumentos = true, comInspecao = true, 
     <div class="card-head"><span class="step">${n()}</span><h2>Inspeção visual</h2>
       <span class="right">opcional</span></div>
     <div class="card-body">
-      <div class="g2">
-        ${arquivo('Foto','Foto do instrumento','image/*','JPG ou PNG, até '+CONFIG.MAX_MB_FOTO+' MB.')}
-        ${campo('Laudo','Laudo da inspeção',{ dica:'Ex.: Recebido íntegro, sem avarias aparentes.' })}
-        <div class="field full" id="wComentario">
-          <label for="fComentario">Comentário</label>
-          <textarea id="fComentario" placeholder="Observações do recebimento."></textarea>
-          <div class="msg" id="mComentario"></div>
-        </div>
+      <!-- Um campo só. "Laudo" e "Comentário" pediam a mesma coisa com
+           dois nomes, e o resultado prático era metade preenchida num,
+           metade no outro — histórico partido em dois campos. -->
+      <div class="field full" id="wLaudo">
+        <label for="fLaudo">Laudo da inspeção</label>
+        <textarea id="fLaudo" placeholder="Estado em que o instrumento foi recebido: integridade, avarias, acessórios que vieram junto, restrições de uso."></textarea>
+        <div class="hint">Opcional. Vai para a linha do tempo do instrumento.</div>
+        <div class="msg" id="mLaudo"></div>
       </div>
     </div>
   </div>` : ''}
@@ -290,6 +301,8 @@ export async function coletarFormInstrumento(raiz, opcoes = {}){
   const referencia = v('Tipo') === 'REFERENCIA';
   // Referência não tem documento de entrada, inspeção nem certificado:
   // os cartões estão escondidos, e o que está escondido não é coletado.
+  // A FOTO não está nessa lista: ela é do cadastro, não da inspeção, e
+  // vale para as duas classificações.
   const usaDocs  = comDocumentos  && !referencia;
   const usaInsp  = comInspecao    && !referencia;
   const usaCert  = comCertificado && !referencia;
@@ -297,8 +310,12 @@ export async function coletarFormInstrumento(raiz, opcoes = {}){
   val.exigir('Familia',     v('Familia'),     'Escolha a família do instrumento.');
   val.exigir('Tipo',        v('Tipo'),        'Escolha a classificação.');
   val.exigir('Descricao',   v('Descricao'),   'Descreva o instrumento.');
+  val.exigir('Fabricante',  v('Fabricante'),  'Informe o fabricante do instrumento.');
   val.exigir('DataEntrada', v('DataEntrada'),
     referencia ? 'Informe a data de cadastro.' : 'Informe a data de entrada.');
+
+  if (!arq('Foto'))
+    val.falha('Foto','Anexe a foto do instrumento.');
 
   if (v('DataEntrada') && v('DataEntrada') > hojeISO())
     val.falha('DataEntrada','A data não pode estar no futuro.');
@@ -313,11 +330,21 @@ export async function coletarFormInstrumento(raiz, opcoes = {}){
 
   if (!val.encerrar()) return null;
 
-  // Uploads só depois da validação: nada de arquivo órfão no Storage.
-  const pasta = new Date().getFullYear() + '/' + (v('Familia').slice(0,8) || 'geral');
+  /* Uploads só depois da validação: nada de arquivo órfão no Storage.
+
+     A pasta é a TAG — uma pasta por equipamento, igual no Storage e na
+     tela Arquivos. A tag definitiva só nasce no INSERT, então aqui vai a
+     prévia, relida agora para ser a mais recente possível. Se outro
+     usuário cadastrar um instrumento da mesma família neste intervalo de
+     milissegundos, o arquivo cai na pasta vizinha — o caminho gravado no
+     banco continua correto, e a tela continua abrindo o arquivo certo. */
+  let pasta = 'sem-tag';
+  try { pasta = pastaDoInstrumento(await proximaTag(v('Familia'), v('Tipo'))); }
+  catch (e){ /* prévia indisponível: o arquivo ainda sobe, em 'sem-tag' */ }
+
   let fotoPath = null, certPath = null;
 
-  if (usaInsp && arq('Foto'))
+  if (arq('Foto'))
     fotoPath = await enviarArquivo(CONFIG.BUCKETS.fotos, arq('Foto'), pasta);
   if (cert)
     certPath = await enviarArquivo(CONFIG.BUCKETS.certificados, cert, pasta);
@@ -343,8 +370,11 @@ export async function coletarFormInstrumento(raiz, opcoes = {}){
     origem:             (notaFiscal || pedidoCompra) ? 'recebimento' : 'avulso'
   };
 
-  const inspecao = (usaInsp && (fotoPath || v('Laudo') || v('Comentario')))
-    ? { foto_path: fotoPath, laudo: v('Laudo'), comentario: v('Comentario') }
+  // A foto sozinha já vale um registro de inspeção: é ela que guarda o
+  // estado do instrumento no dia em que ele entrou.
+  const laudo = usaInsp ? v('Laudo') : '';
+  const inspecao = (fotoPath || laudo)
+    ? { foto_path: fotoPath, laudo, comentario: '' }
     : null;
 
   const calibracao = (usaCert && v('DataCalibracao'))

@@ -11,8 +11,9 @@
    quem garante é o banco. Toda ação aqui passa por uma RPC que
    verifica sou_admin() de novo.
    ===================================================================== */
-import { esc, fmtDT, toast, msgErro, htmlCarregando, htmlVazio, chave, debounce } from '../utils.js';
-import { listarUsuarios, definirPapel, definirAtivo, listarAuditoria,
+import { esc, fmtDT, toast, msgErro, htmlCarregando, htmlVazio, chave, debounce,
+         nomeProprio } from '../utils.js';
+import { listarUsuarios, definirPapel, definirAtivo, definirNomeUsuario, listarAuditoria,
          listarFamilias, listarInstrumentos, carregarConfig, salvarConfig,
          apagarTodosInstrumentos, apagarInstrumentosDaFamilia,
          listarEmailsSetor, salvarEmailSetor, removerEmailSetor,
@@ -22,8 +23,13 @@ import { abrirModal, confirmar } from '../components/modal.js';
 import { criarTabela } from '../components/tabela.js';
 
 const PARAMETROS = [
+  { chave:'alerta_vencimento_proximo_mes', rotulo:'Alertar até o fim do próximo mês', unidade:'', tipo:'simnao',
+    ajuda:'Com "sim", entra como "próximo do vencimento" tudo que vence até o último dia do MÊS QUE VEM — ' +
+          'o horizonte do controle mensal. Vale para o painel, a lista de calibração, o contador da aba e ' +
+          'os relatórios, todos ao mesmo tempo. Com "não", volta a valer a janela em dias abaixo.' },
   { chave:'dias_proximo_vencimento', rotulo:'Janela de alerta de vencimento', unidade:'dias', tipo:'number',
-    ajuda:'Quantos dias antes do vencimento o instrumento passa a aparecer como "próximo do vencimento" no painel e na lista de calibração.' },
+    ajuda:'Quantos dias antes do vencimento o instrumento passa a aparecer como "próximo do vencimento". ' +
+          'Só é usado quando o alerta até o fim do próximo mês está desligado.' },
   { chave:'prazo_alerta_emprestimo_casual_dias', rotulo:'Prazo do empréstimo casual', unidade:'dias', tipo:'number',
     ajuda:'Passado esse prazo sem devolução, o empréstimo casual vira lembrete no painel.' },
   { chave:'prazo_alerta_emprestimo_externo_dias', rotulo:'Prazo do empréstimo externo', unidade:'dias', tipo:'number',
@@ -95,8 +101,16 @@ async function abaUsuarios(el){
       <b>Como entra gente nova.</b> O Supabase é quem cria a credencial; esta tela define o que a
       pessoa pode fazer.<br>
       1. No painel do Supabase: <b>Authentication → Users → Add user</b>, com <b>Auto Confirm</b> ligado.<br>
-      2. O perfil aparece aqui sozinho, como <b>metrologista ativo</b>.<br>
-      3. Ajuste o papel abaixo, se for o caso.
+      2. O perfil aparece aqui sozinho, como <b>metrologista ativo</b>, com o nome tirado do e-mail.<br>
+      3. Corrija o <b>nome</b> e ajuste o papel abaixo.
+    </div>
+
+    <div class="warn-box w">
+      <b>O nome escrito aqui é o nome que a pessoa vê.</b> Ele aparece na saudação do painel, no
+      cabeçalho, na assinatura do e-mail de cobrança e no "emitido por" dos relatórios em PDF.
+      Como o perfil nasce do e-mail, ele começa como <code>joao</code> — o sistema arruma a caixa
+      e os acentos que consegue reconhecer, mas <b>acento não se deduz</b>: "sergio" tanto pode ser
+      Sérgio quanto Sergio. Escreva o nome completo, com acento, e acabou a adivinhação.
     </div>
 
     <div class="card">
@@ -105,11 +119,18 @@ async function abaUsuarios(el){
         <span class="right">${usuarios.length} · ${admins} administrador(es)</span>
       </div>
       <div class="card-body">
-        <div class="tbl-wrap"><table class="tbl" style="min-width:760px">
-          <thead><tr><th>Nome</th><th>E-mail</th><th>Papel</th><th>Acesso</th><th></th></tr></thead>
+        <div class="tbl-wrap"><table class="tbl" style="min-width:820px">
+          <thead><tr><th style="width:230px">Nome</th><th>E-mail</th><th>Papel</th>
+                     <th>Acesso</th><th></th></tr></thead>
           <tbody>${usuarios.map(u => `
             <tr class="${u.ativo ? '' : 'inativa'}">
-              <td>${esc(u.nome || '—')}${u.email === meuEmail() ? ' <span class="tag">você</span>' : ''}</td>
+              <td>
+                <input type="text" data-nome="${esc(u.id)}" value="${esc(u.nome || '')}"
+                       placeholder="Nome completo, com acento"
+                       style="width:100%;font-size:13px;padding:6px 9px;border:1px solid var(--border2);
+                              border-radius:var(--r-sm);font-family:inherit">
+                ${u.email === meuEmail() ? '<div style="margin-top:3px"><span class="tag">você</span></div>' : ''}
+              </td>
               <td class="mono" style="font-size:12px">${esc(u.email)}</td>
               <td>
                 <select data-papel="${esc(u.id)}" style="font-size:13px;padding:5px 8px;
@@ -139,7 +160,7 @@ async function abaUsuarios(el){
                ['Emprestar e registrar devolução', 1, 1],
                ['Notificar setor sobre devolução em atraso', 1, 1],
                ['Alterar periodicidade (com justificativa)', 1, 1],
-               ['Inativar / reativar instrumento', 0, 1],
+               ['Inativar / reativar instrumento (com justificativa)', 1, 1],
                ['Apagar instrumentos', 0, 1],
                ['Alterar parâmetros do sistema', 0, 1],
                ['Cadastrar e-mails por setor', 0, 1],
@@ -152,6 +173,34 @@ async function abaUsuarios(el){
         </table></div>
       </div>
     </div>`;
+
+  /* O nome salva ao sair do campo (ou no Enter), sem botão próprio: é um
+     campo só, e um botão "Salvar" por linha encheria a tabela de ações
+     que quase nunca são usadas. A caixa e os acentos conhecidos são
+     normalizados na hora de gravar — quem escreveu "joao amaral" recebe
+     "João Amaral" de volta e vê o que ficou guardado. */
+  el.querySelectorAll('[data-nome]').forEach(inp => {
+    const original = inp.value;
+    const salvar = async () => {
+      const novo = nomeProprio(inp.value);
+      if (novo === original){ inp.value = original; return; }
+      if (novo.length < 3){
+        toast('Escreva o nome completo (mínimo de 3 caracteres).', 'error');
+        inp.value = original; return;
+      }
+      inp.disabled = true;
+      try {
+        await definirNomeUsuario(inp.dataset.nome, novo);
+        toast(`Nome atualizado para ${novo}.`, 'success');
+        await abaUsuarios(el);
+      } catch (e){
+        toast(msgErro(e), 'error');
+        inp.value = original; inp.disabled = false;
+      }
+    };
+    inp.addEventListener('change', salvar);
+    inp.addEventListener('keydown', e => { if (e.key === 'Enter') inp.blur(); });
+  });
 
   el.querySelectorAll('[data-papel]').forEach(sel => {
     const original = sel.value;

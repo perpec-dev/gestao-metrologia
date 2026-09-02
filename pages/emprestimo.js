@@ -12,7 +12,8 @@ import { esc, fmtDT, fmtData, hojeISO, p2, slug, chave, toast, msgErro, debounce
          lerXLSX, lerPDFMake, baixarBlob } from '../utils.js';
 import { listarInstrumentos, listarEmprestimosAbertos, registrarMovimentacao,
          registrarDevolucao, listarHistoricoEmprestimos, enviarArquivo,
-         listarEmailsSetor, cfgLista, ouvir, abrirArquivo } from '../supabase.js';
+         listarEmailsSetor, cfgLista, ouvir, abrirArquivo,
+         pastaDoInstrumento } from '../supabase.js';
 import { CONFIG } from '../config.js';
 import { badge, PODE_EMPRESTAR } from '../components/status-badge.js';
 import { abrirModal } from '../components/modal.js';
@@ -361,7 +362,7 @@ function ligarFormulario(container){
     try {
       const arq = inpTermo.files[0];
       const termo_path = arq
-        ? await enviarArquivo(CONFIG.BUCKETS.termos, arq, new Date().getFullYear() + '/' + escolhido.tag)
+        ? await enviarArquivo(CONFIG.BUCKETS.termos, arq, pastaDoInstrumento(escolhido.tag))
         : null;
 
       await registrarMovimentacao(escolhido.id, {
@@ -477,39 +478,62 @@ async function carregarAbertos(){
 /* prazos sem ninguém precisar copiar da tela.                          */
 /* ==================================================================== */
 
-/** Uma linha do corpo do e-mail, por instrumento. */
+/* O TEXTO do e-mail mora em CONFIG.EMAIL_COBRANCA (config.js), com os
+   marcadores documentados. Aqui fica só a montagem: escolher singular ou
+   plural, preencher os marcadores e juntar os pedaços. Quem quiser mudar
+   a redação não precisa abrir este arquivo. */
+
+/** Troca {marcadores} pelo valor. Marcador sem valor vira string vazia —
+    e a linha que ficar só com espaço em branco é descartada depois. */
+function preencher(modelo, valores){
+  return String(modelo || '').replace(/\{(\w+)\}/g,
+    (_, k) => (valores[k] == null ? '' : String(valores[k])));
+}
+
+/** Uma entrada da lista, por instrumento. Linha cujo dado opcional não
+    existe (prazo, devolução prevista) some inteira. */
 function linhaEmail(m){
-  return [
-    `• ${m.tag} — ${m.descricao}`,
-    `  Responsável: ${m.responsavel}`,
-    `  Saída em ${fmtDT(m.data_saida)} · fora há ${m.dias_fora} dia(s)` +
-      (m.prazo_alerta_dias ? ` (prazo: ${m.prazo_alerta_dias} dias)` : ''),
-    m.data_prevista_retorno ? `  Devolução prevista: ${fmtDT(m.data_prevista_retorno)}` : null
-  ].filter(Boolean).join('\n');
+  const texto = preencher(CONFIG.EMAIL_COBRANCA.ITEM, {
+    tag: m.tag,
+    descricao: m.descricao,
+    responsavel_item: m.responsavel,
+    saida: fmtDT(m.data_saida),
+    dias: m.dias_fora,
+    prazo: m.prazo_alerta_dias ? ` (prazo: ${m.prazo_alerta_dias} dias)` : '',
+    prevista: m.data_prevista_retorno ? fmtDT(m.data_prevista_retorno) : ''
+  });
+  // Sem devolução prevista, a linha "Devolução prevista:" fica pendurada
+  // sem valor. Uma linha que terminou em ':' perdeu o dado dela.
+  return texto.split('\n').filter(l => l.trim() && !/[:·]\s*$/.test(l.trim())).join('\n');
 }
 
 function montarEmail(setor, itens){
+  const T       = CONFIG.EMAIL_COBRANCA;
   const contato = emailsSetor.get(setor);
   const plural  = itens.length > 1;
 
-  const assunto = `[Metrologia] Devolução pendente — ${
-    plural ? `${itens.length} instrumentos · ${setor}` : `${itens[0].tag} · ${setor}`}`;
+  const valores = {
+    responsavel: contato?.responsavel || '',
+    setor,
+    qtd: itens.length,
+    tags: itens.map(m => m.tag).join(', '),
+    assinatura: meuNome() || 'Metrologia',
+    empresa: CONFIG.EMPRESA,
+    documento: CONFIG.APP_REF
+  };
+
+  const assunto = preencher(plural ? T.ASSUNTO_N : T.ASSUNTO_1, valores);
 
   const corpo = [
-    contato?.responsavel ? `Prezado(a) ${contato.responsavel},` : 'Prezado(a),',
+    preencher(contato?.responsavel ? T.SAUDACAO : T.SAUDACAO_SEM, valores),
     '',
-    plural
-      ? `Os instrumentos abaixo estão com o setor ${setor} além do prazo estabelecido pela Metrologia:`
-      : `O instrumento abaixo está com o setor ${setor} além do prazo estabelecido pela Metrologia:`,
+    preencher(plural ? T.ABERTURA_N : T.ABERTURA_1, valores),
     '',
     itens.map(linhaEmail).join('\n\n'),
     '',
-    'Pedimos a gentileza de sinalizar ao responsável e providenciar a devolução ao setor de Metrologia.',
+    preencher(T.FECHAMENTO, valores),
     '',
-    'Atenciosamente,',
-    meuNome() || 'Metrologia',
-    `Metrologia — ${CONFIG.EMPRESA}`,
-    CONFIG.DOC_REF
+    preencher(T.ASSINATURA, valores)
   ].join('\n');
 
   return { para: contato?.email || '', assunto, corpo };
@@ -886,7 +910,7 @@ async function exportarHistPDF(container){
       footer: (pagina, total) => ({
         margin: [28, 8, 28, 0],
         columns: [
-          { text:`${CONFIG.EMPRESA}  •  ${CONFIG.DOC_REF}`, fontSize:6.5, italics:true, color:'#AAA5A0' },
+          { text:`${CONFIG.EMPRESA}  •  ${CONFIG.APP_REF}`, fontSize:6.5, italics:true, color:'#AAA5A0' },
           { text:`Página ${pagina} de ${total}`, fontSize:6.5, color:'#AAA5A0', alignment:'right' }
         ]
       }),

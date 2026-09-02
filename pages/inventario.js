@@ -12,7 +12,8 @@ import { listarInstrumentos, listarFamilias, inativarInstrumento,
          reativarInstrumento, apagarInstrumentos, cfgLista, MOTIVO_OUTROS,
          ouvir } from '../supabase.js';
 import { criarTabela } from '../components/tabela.js';
-import { badge, badgeCondicao, classeLinha, legenda } from '../components/status-badge.js';
+import { badge, badgeCondicao, classeLinha, legenda,
+         bloqueioInativacao } from '../components/status-badge.js';
 import { abrirModal } from '../components/modal.js';
 import { souAdmin } from '../auth.js';
 import { abrirDetalhe } from './calibracao.js';
@@ -34,8 +35,16 @@ export async function render(container){
 
   container.innerHTML = `
     ${souAdmin() ? '' : `<div class="warn-box i">
-      Inativar e reativar instrumentos é atribuição do <b>administrador</b>.
-      Você pode consultar o inventário normalmente.</div>`}
+      Inativar e reativar instrumentos é atribuição da metrologia — você pode fazer as duas
+      coisas, com motivo e justificativa. <b>Apagar</b> instrumento, esse sim, é só do
+      administrador: inativar preserva o histórico, apagar destrói.</div>`}
+
+    <div class="warn-box i">
+      <b>Quando dá para inativar.</b> Só instrumento <b>calibrado</b> ou <b>descalibrado</b> que
+      <b>não esteja emprestado</b>. Com a calibração solicitada ou em laboratório externo, encerre
+      ou cancele a solicitação primeiro — inativar no meio abandona o pedido sem cancelá-lo.
+      Padrão de referência também pode ser inativado; nele vale só a regra do empréstimo.
+    </div>
 
     <div class="filtros">
       <div class="field busca">
@@ -187,13 +196,25 @@ async function carregar(container, silencioso = false){
           ? `<span title="Com ${esc(l.emprestado_para)}">${esc(l.setor_atual || '—')} ↗</span>`
           : esc(l.localizacao_normal || '—') },
       { chave:'acoes', rotulo:'', ordenavel:false, largura:'210px',
-        html: l => `
-          <div style="display:flex;gap:6px;flex-wrap:wrap">
-            <button class="btn btn-outline btn-sm" data-ficha="${esc(l.id)}">Ficha</button>
-            ${l.condicao_fisica === 'ativo'
-              ? `<button class="btn btn-outline btn-sm" data-inativar="${esc(l.id)}" ${souAdmin() ? '' : 'disabled'}>Inativar</button>`
-              : `<button class="btn btn-outline btn-sm" data-reativar="${esc(l.id)}" ${souAdmin() ? '' : 'disabled'}>Reativar</button>`}
-          </div>` }
+        /* Botão desabilitado com o motivo no title, em vez de botão que
+           some: quem procura "Inativar" e não acha conclui que o sistema
+           quebrou; quem lê "está emprestado para Fulano" sabe o que
+           fazer em seguida. */
+        html: l => {
+          if (l.condicao_fisica !== 'ativo') return `
+            <div style="display:flex;gap:6px;flex-wrap:wrap">
+              <button class="btn btn-outline btn-sm" data-ficha="${esc(l.id)}">Ficha</button>
+              <button class="btn btn-outline btn-sm" data-reativar="${esc(l.id)}">Reativar</button>
+            </div>`;
+          const bloqueio = bloqueioInativacao(l);
+          return `
+            <div style="display:flex;gap:6px;flex-wrap:wrap">
+              <button class="btn btn-outline btn-sm" data-ficha="${esc(l.id)}">Ficha</button>
+              <button class="btn btn-outline btn-sm" data-inativar="${esc(l.id)}"
+                      ${bloqueio ? 'disabled' : ''}
+                      title="${esc(bloqueio || 'Inativar este instrumento')}">
+                Inativar</button>
+            </div>` } }
     ]
   });
 
@@ -315,6 +336,16 @@ function modalApagar(container){
 /* ==================================================================== */
 function modalInativar(inst, container){
   if (!inst) return;
+
+  // A tabela já desabilita o botão, mas a lista pode estar defasada por
+  // alguns segundos: entre pintar a linha e clicar nela, outro usuário
+  // pode ter emprestado o instrumento ou solicitado a calibração.
+  const bloqueio = bloqueioInativacao(inst);
+  if (bloqueio){
+    toast(`${inst.tag} não pode ser inativado. ${bloqueio}`, 'error');
+    return;
+  }
+
   const motivos = cfgLista('motivos_inativacao');
 
   abrirModal({
@@ -323,7 +354,8 @@ function modalInativar(inst, container){
     corpo: `
       <div class="warn-box w">
         A inativação é registrada na trilha de auditoria com o seu e-mail, a data,
-        o motivo e a justificativa. Instrumento inativo não pode ser emprestado.
+        o motivo e a justificativa. Instrumento inativo não pode ser emprestado
+        nem entra no fluxo de calibração até ser reativado.
       </div>
       <div class="kv" style="margin-bottom:16px">
         <div><div class="k">Instrumento</div><div class="v">${esc(inst.descricao)}</div></div>
@@ -332,8 +364,6 @@ function modalInativar(inst, container){
               ? 'Referência — padrão de aferição' : 'TMMDE — instrumento de uso'}</div></div>
         <div><div class="k">Situação atual</div><div class="v">${badge(inst.status_efetivo)}</div></div>
       </div>
-      ${inst.emprestado ? `<div class="warn-box e">Atenção: este instrumento está emprestado para
-        <b>${esc(inst.emprestado_para)}</b>. Registre a devolução antes de inativar.</div>` : ''}
       <div class="field" id="wMotivo">
         <label for="fMotivo">Motivo<span class="req">*</span></label>
         <select id="fMotivo"><option value="">Selecione…</option>

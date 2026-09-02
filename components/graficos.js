@@ -38,8 +38,18 @@ function barraV(x, y, larg, alt, raio = 4){
           L ${x + larg} ${y + alt} Z`.replace(/\s+/g, ' ');
 }
 
+/* Retângulo deitado, com a ponta direita arredondada e a base fixa no
+   eixo da esquerda — o espelho de barraV para barras horizontais. */
+function barraH(x, y, larg, alt, raio = 4){
+  const r = Math.min(raio, alt / 2, Math.max(larg, 0));
+  if (larg <= 0.5) return '';
+  return `M ${x} ${y} L ${x + larg - r} ${y} Q ${x + larg} ${y} ${x + larg} ${y + r}
+          L ${x + larg} ${y + alt - r} Q ${x + larg} ${y + alt} ${x + larg - r} ${y + alt}
+          L ${x} ${y + alt} Z`.replace(/\s+/g, ' ');
+}
+
 /* ---------------------------------------------------------------------
-   Dica flutuante — o mesmo elemento serve os três gráficos.
+   Dica flutuante — o mesmo elemento serve os quatro gráficos.
    Tooltip nunca é o único caminho para um valor: a tabela-gêmea existe.
    --------------------------------------------------------------------- */
 function ligarDica(raiz){
@@ -152,7 +162,11 @@ export function arcoSituacao(el, { segmentos, total, rotuloCentro = 'ativos' }){
    ===================================================================== */
 export function barrasVencimento(el, { meses, totalAtivos = 0 }){
   const L = 360, A = 200;
-  const mE = 8, mD = 8, mT = 22, mB = 34;
+  /* mE é a CALHA da escala, não uma margem decorativa: os números do
+     eixo moram nela, fora da área de plotagem. Antes o rótulo era
+     desenhado dentro do gráfico, encostado na esquerda — e a primeira
+     barra passava por cima dele, escondendo justamente o mês corrente. */
+  const mE = 30, mD = 8, mT = 22, mB = 34;
   const larguraPlot = L - mE - mD, alturaPlot = A - mT - mB;
   const max = Math.max(1, ...meses.map(m => m.valor));
   // Teto "redondo" para a grade não cair em número quebrado.
@@ -165,8 +179,10 @@ export function barrasVencimento(el, { meses, totalAtivos = 0 }){
   const grade = [0,1,2,3].map(i => {
     const v = passo * i;
     const y = mT + alturaPlot - (v / teto) * alturaPlot;
+    // Número alinhado à direita na calha e centrado na própria linha da
+    // grade: é a linha que ele nomeia, não o espaço acima dela.
     return `<line class="${i ? 'g-grid' : 'g-base'}" x1="${mE}" y1="${y}" x2="${L-mD}" y2="${y}"/>
-            <text class="g-eixo" x="${mE}" y="${y - 4}">${i ? nfmt(v) : ''}</text>`;
+            <text class="g-eixo" x="${mE - 7}" y="${y + 3.5}" text-anchor="end">${i ? nfmt(v) : ''}</text>`;
   }).join('');
 
   const barras = meses.map((m, i) => {
@@ -174,7 +190,7 @@ export function barrasVencimento(el, { meses, totalAtivos = 0 }){
     const x = mE + faixa * i + (faixa - larguraBarra) / 2;
     const y = mT + alturaPlot - alt;
     const dica = `${esc(m.rotuloLongo || m.rotulo)}: ${pct(m.valor, totalAtivos)}%` +
-                 `<span class="l2">${nfmt(m.valor)} a calibrar, de ${nfmt(totalAtivos)} instrumentos ativos</span>`;
+                 `<span class="l2">${nfmt(m.valor)} a calibrar, de ${nfmt(totalAtivos)} sob controle de calibração</span>`;
     return `
       <g data-dica="${dica}">
         <rect class="g-alvo" x="${mE + faixa*i}" y="${mT}" width="${faixa}" height="${alturaPlot}"/>
@@ -196,7 +212,7 @@ export function barrasVencimento(el, { meses, totalAtivos = 0 }){
        <svg viewBox="0 0 ${L} ${A}" role="img" aria-label="Instrumentos a vencer por mês">
          ${grade}${barras}
        </svg>
-       ${tabelaGemea(['Mês','A calibrar','% do ativo'],
+       ${tabelaGemea(['Mês','A calibrar','% sob controle'],
           meses.map(m => [m.rotuloLongo || m.rotulo, nfmt(m.valor), pct(m.valor, totalAtivos) + '%']))}
      </div>`);
 
@@ -204,7 +220,79 @@ export function barrasVencimento(el, { meses, totalAtivos = 0 }){
 }
 
 /* =====================================================================
-   3. PARETO — onde as pendências se concentram
+   3. INATIVOS — quanto do acervo está fora de uso, e por quê
+
+   Duas perguntas numa carta só, porque uma não vale sem a outra:
+   "12% do acervo está inativo" é um número que assusta ou tranquiliza
+   dependendo do motivo — 12% aguardando manutenção é fila de trabalho,
+   12% não encontrado é problema de controle patrimonial.
+
+   Barras DEITADAS de propósito: o rótulo é texto de tamanho variável
+   ("Necessário manutenção", "Não encontrado") e, na vertical, viraria
+   texto inclinado ou abreviado. Deitado, cada nome é lido na horizontal,
+   do jeito que se lê qualquer outra coisa.
+
+   Série única, cor única: a altura (aqui, o comprimento) já carrega a
+   informação, e pintar cada motivo de uma cor inventaria seis
+   significados novos no semáforo que a aplicação já tem.
+   ===================================================================== */
+export function motivosInativos(el, { motivos, inativos = 0, acervo = 0 }){
+  const percentual = pct(inativos, acervo);
+
+  if (!inativos){
+    el.innerHTML = cartao('Instrumentos inativos',
+      'Quanto do acervo está fora de uso, e por qual motivo.',
+      `<div class="warn-box g" style="margin:0">Nenhum instrumento inativo.
+        Todo o acervo está em uso.</div>`);
+    return;
+  }
+
+  const dados = motivos.filter(m => m.valor > 0)
+                       .sort((a,b) => b.valor - a.valor)
+                       .slice(0, 8);
+  const max = Math.max(1, ...dados.map(m => m.valor));
+
+  const L = 360, mE = 128, mD = 30, mT = 6, mB = 6, fila = 26, altura = 15;
+  const A = mT + dados.length * fila + mB;
+  const plot = L - mE - mD;
+
+  const barras = dados.map((m, i) => {
+    const y = mT + i * fila;
+    const larg = (m.valor / max) * plot;
+    const dica = `${esc(m.rotulo)}: ${pct(m.valor, inativos)}% dos inativos` +
+                 `<span class="l2">${nfmt(m.valor)} instrumento(s) · ${pct(m.valor, acervo)}% do acervo</span>`;
+    return `
+      <g data-dica="${dica}">
+        <rect class="g-alvo" x="0" y="${y}" width="${L}" height="${fila}"/>
+        <text class="g-eixo" x="${mE - 8}" y="${y + altura - 3}" text-anchor="end">${esc(m.rotulo)}</text>
+        <path class="g-marca" d="${barraH(mE, y + 2, larg, altura)}"
+              fill="var(--serie)" style="animation-delay:${i * 60}ms"/>
+        <text class="g-valor" x="${mE + larg + 6}" y="${y + altura - 3}"
+              style="animation-delay:${300 + i * 60}ms">${nfmt(m.valor)}</text>
+      </g>`;
+  }).join('');
+
+  el.innerHTML = cartao('Instrumentos inativos',
+    'Quanto do acervo está fora de uso, e por qual motivo. A porcentagem é sobre o acervo inteiro — ativos e inativos.',
+    `<div class="grafico">
+       <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:14px">
+         <span class="g-hero-num"><span data-num>${percentual}</span>%</span>
+         <span class="g-sub">${nfmt(inativos)} de ${nfmt(acervo)} instrumentos do acervo
+           estão inativos</span>
+       </div>
+       <svg viewBox="0 0 ${L} ${A}" role="img"
+            aria-label="Instrumentos inativos por motivo">${barras}</svg>
+       ${tabelaGemea(['Motivo','Instrumentos','% dos inativos','% do acervo'],
+          dados.map(m => [m.rotulo, nfmt(m.valor),
+                          pct(m.valor, inativos) + '%', pct(m.valor, acervo) + '%']))}
+     </div>`);
+
+  animarNumero(el.querySelector('[data-num]'), percentual, 700);
+  ligarDica(el.querySelector('.grafico'));
+}
+
+/* =====================================================================
+   4. PARETO — onde as pendências se concentram
 
    Um eixo só: as barras são contagem por família e a linha é a
    contagem ACUMULADA, na mesma escala. O percentual aparece como
@@ -237,7 +325,7 @@ export function pareto(el, { familias, totalAtivos = 0 }){
     pontos.push({ x: cx, y: yDe(acumulado), acc: acumulado, f });
     const alt = (f.valor / total) * alturaPlot;
     const x = cx - larguraBarra / 2;
-    const dica = `${esc(f.rotulo)}: ${pct(f.valor, totalAtivos)}% do acervo ativo` +
+    const dica = `${esc(f.rotulo)}: ${pct(f.valor, totalAtivos)}% do que está sob controle` +
                  `<span class="l2">${nfmt(f.valor)} pendente(s) · ${pct(acumulado, total)}% do total de pendências, acumulado</span>`;
     return `
       <g data-dica="${dica}">
@@ -275,7 +363,7 @@ export function pareto(el, { familias, totalAtivos = 0 }){
          <div class="item"><span class="sw" style="background:var(--serie)"></span>Pendências da família</div>
          <div class="item"><span class="sw linha" style="background:var(--serie-2)"></span>Acumulado</div>
        </div>
-       ${tabelaGemea(['Família','Pendentes','% do ativo','Acumulado','% acumulado'],
+       ${tabelaGemea(['Família','Pendentes','% sob controle','Acumulado','% acumulado'],
           pontos.map(p => [p.f.rotulo, nfmt(p.f.valor), pct(p.f.valor, totalAtivos)+'%',
                            nfmt(p.acc), pct(p.acc, total)+'%']))}
      </div>`);

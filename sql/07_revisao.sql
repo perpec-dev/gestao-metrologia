@@ -104,7 +104,7 @@ begin
   -- 3. "Outros" sempre por último: é a saída de emergência da lista,
   --    não a primeira opção — e é a única que exige descrever a
   --    segregação do instrumento na justificativa.
-  v_lista := v_lista || 'Outros';
+  v_lista := v_lista || 'Outros'::text;
 
   insert into public.config (chave, valor)
   values ('motivos_inativacao', array_to_string(v_lista, ','))
