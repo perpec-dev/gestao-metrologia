@@ -437,14 +437,20 @@ function pintarAbertos(){
     return;
   }
 
+  /* Sem contagem no botão: o número de cada tipo já está na lista logo
+     abaixo, e três pastilhas com número viram ruído numa tela que já tem
+     indicador e aviso de atraso. O tipo que não tem nenhum empréstimo em
+     aberto fica desabilitado — é o suficiente para ninguém clicar num
+     recorte vazio. */
   const conta = t => t ? abertos.filter(m => m.tipo === t).length : abertos.length;
   const seletor = `
     <div class="subtabs subtabs-filtro" id="tiposAberto">
       ${[['','Todos'], ['casual','Casual'], ['posse','Posse'], ['externo','Externo']]
         .map(([t, rot]) => `
           <button class="subtab ${filtroTipo === t ? 'sel' : ''}" data-tipo="${t}"
-                  ${!conta(t) && t ? 'disabled' : ''}>
-            ${esc(rot)} <span class="n">${conta(t)}</span></button>`).join('')}
+                  ${!conta(t) && t ? 'disabled' : ''}
+                  title="${!conta(t) && t ? 'Nenhum empréstimo deste tipo em aberto' : ''}"
+            >${esc(rot)}</button>`).join('')}
     </div>`;
 
   const lista = filtroTipo ? abertos.filter(m => m.tipo === filtroTipo) : abertos;
