@@ -88,6 +88,33 @@ const cartao = (titulo, sub, corpo) => `
     </div>
   </div>`;
 
+/* ---------------------------------------------------------------------
+   MEDIR ANTES DE DESENHAR.
+
+   O texto dentro de um SVG escala junto com o viewBox: um gráfico
+   desenhado em 360 de largura e exibido em 620px renderiza o rótulo de
+   eixo de 10,5px como 18px. Foi por isso que antes existia um teto de
+   largura no desenho — e o teto é que deixava a carta com margens vazias
+   dos dois lados.
+
+   A solução é desenhar em ESCALA 1:1: o cartão é montado primeiro, a
+   largura real do miolo é medida, e o viewBox nasce com essa largura. O
+   desenho ocupa a carta inteira e cada texto sai exatamente no tamanho
+   em que foi projetado, em qualquer coluna.
+
+   Como a largura vira parte do desenho, o gráfico precisa ser refeito
+   quando a janela muda de tamanho — quem chama cuida disso (ver o
+   listener de resize em pages/dashboard.js).
+   --------------------------------------------------------------------- */
+function moldura(el, titulo, sub){
+  el.innerHTML = cartao(titulo, sub, '<div class="grafico"></div>');
+  const alvo = el.querySelector('.grafico');
+  // O piso de 300 protege o caso em que a medida vem zerada: elemento
+  // ainda não visível (aba fechada, cartão dentro de display:none).
+  const L = Math.max(300, Math.round(alvo.clientWidth || 340));
+  return { alvo, L };
+}
+
 /* =====================================================================
    1. ARCO DE SITUAÇÃO  (rosca aberta, meia-lua)
 
@@ -137,22 +164,30 @@ export function arcoSituacao(el, { segmentos, total, rotuloCentro = 'ativos' }){
       <span class="qtd">${nfmt(d.valor)}</span>
     </div>`).join('');
 
-  el.innerHTML = cartao('Situação do acervo',
-    'Distribuição dos instrumentos ativos pela situação calculada agora.',
-    `<div class="grafico">
-       <svg viewBox="0 0 ${L} ${A}" role="img"
-            aria-label="Distribuição dos instrumentos por situação">
-         ${marcas}
-         <text class="g-hero" x="${cx}" y="${cy - 14}" text-anchor="middle">${nfmt(total)}</text>
-         <text class="g-hero-sub" x="${cx}" y="${cy + 6}" text-anchor="middle">${esc(rotuloCentro)}</text>
-       </svg>
-       <div class="g-legenda colunas">${legenda}</div>
-       ${tabelaGemea(['Situação','Instrumentos','% do ativo'],
-          segmentos.map(d => [d.rotulo, nfmt(d.valor), pct(d.valor, base) + '%']))}
-     </div>`);
+  /* O anel é redondo: ele não estica com a carta, ao contrário das
+     barras. Numa carta larga, esticá-lo só faria um anel gigante com o
+     número do centro do tamanho de um título. Então quem ocupa a largura
+     sobrando é a LEGENDA, que vai para o lado do anel em vez de embaixo
+     dele — e a carta encolhe seis linhas de altura no caminho. Abaixo de
+     ~560px o flex quebra e volta a empilhar. */
+  const { alvo } = moldura(el, 'Situação do acervo',
+    'Distribuição dos instrumentos ativos pela situação calculada agora.');
 
-  animarNumero(el.querySelector('.g-hero'), total, 720);
-  ligarDica(el.querySelector('.grafico'));
+  alvo.innerHTML = `
+    <div class="arco-wrap">
+      <svg viewBox="0 0 ${L} ${A}" role="img"
+           aria-label="Distribuição dos instrumentos por situação">
+        ${marcas}
+        <text class="g-hero" x="${cx}" y="${cy - 14}" text-anchor="middle">${nfmt(total)}</text>
+        <text class="g-hero-sub" x="${cx}" y="${cy + 6}" text-anchor="middle">${esc(rotuloCentro)}</text>
+      </svg>
+      <div class="g-legenda colunas">${legenda}</div>
+    </div>
+    ${tabelaGemea(['Situação','Instrumentos','% do ativo'],
+       segmentos.map(d => [d.rotulo, nfmt(d.valor), pct(d.valor, base) + '%']))}`;
+
+  animarNumero(alvo.querySelector('.g-hero'), total, 720);
+  ligarDica(alvo);
 }
 
 /* =====================================================================
@@ -161,7 +196,10 @@ export function arcoSituacao(el, { segmentos, total, rotuloCentro = 'ativos' }){
    duplicaria a informação que a altura já dá.
    ===================================================================== */
 export function barrasVencimento(el, { meses, totalAtivos = 0 }){
-  const L = 360, A = 200;
+  const { alvo, L } = moldura(el, 'Carga de calibração por mês',
+    'Quantos instrumentos vencem em cada um dos próximos seis meses. Serve para negociar agenda com o laboratório.');
+
+  const A = 210;
   /* mE é a CALHA da escala, não uma margem decorativa: os números do
      eixo moram nela, fora da área de plotagem. Antes o rótulo era
      desenhado dentro do gráfico, encostado na esquerda — e a primeira
@@ -173,8 +211,11 @@ export function barrasVencimento(el, { meses, totalAtivos = 0 }){
   const passo = Math.max(1, Math.ceil(max / 3));
   const teto  = passo * 3;
 
+  /* A barra acompanha a carta: numa coluna larga, seis barras finas com
+     vãos enormes desperdiçam a largura que acabamos de ganhar. O teto de
+     72px evita o extremo oposto — barra tão gorda que vira bloco. */
   const faixa = larguraPlot / meses.length;
-  const larguraBarra = Math.min(38, faixa - 14);
+  const larguraBarra = Math.max(14, Math.min(72, faixa - 18));
 
   const grade = [0,1,2,3].map(i => {
     const v = passo * i;
@@ -206,17 +247,14 @@ export function barrasVencimento(el, { meses, totalAtivos = 0 }){
       </g>`;
   }).join('');
 
-  el.innerHTML = cartao('Carga de calibração por mês',
-    'Quantos instrumentos vencem em cada um dos próximos seis meses. Serve para negociar agenda com o laboratório.',
-    `<div class="grafico">
-       <svg viewBox="0 0 ${L} ${A}" role="img" aria-label="Instrumentos a vencer por mês">
-         ${grade}${barras}
-       </svg>
-       ${tabelaGemea(['Mês','A calibrar','% sob controle'],
-          meses.map(m => [m.rotuloLongo || m.rotulo, nfmt(m.valor), pct(m.valor, totalAtivos) + '%']))}
-     </div>`);
+  alvo.innerHTML = `
+    <svg viewBox="0 0 ${L} ${A}" role="img" aria-label="Instrumentos a vencer por mês">
+      ${grade}${barras}
+    </svg>
+    ${tabelaGemea(['Mês','A calibrar','% sob controle'],
+       meses.map(m => [m.rotuloLongo || m.rotulo, nfmt(m.valor), pct(m.valor, totalAtivos) + '%']))}`;
 
-  ligarDica(el.querySelector('.grafico'));
+  ligarDica(alvo);
 }
 
 /* =====================================================================
@@ -247,48 +285,61 @@ export function motivosInativos(el, { motivos, inativos = 0, acervo = 0 }){
     return;
   }
 
+  const { alvo, L } = moldura(el, 'Instrumentos inativos',
+    'Quanto do acervo está fora de uso, e por qual motivo. A porcentagem é sobre o acervo inteiro — ativos e inativos.');
+
   const dados = motivos.filter(m => m.valor > 0)
                        .sort((a,b) => b.valor - a.valor)
                        .slice(0, 8);
   const max = Math.max(1, ...dados.map(m => m.valor));
 
-  const L = 360, mE = 128, mD = 30, mT = 6, mB = 6, fila = 26, altura = 15;
+  /* A calha dos rótulos é fixa: ela precisa caber "Necessário
+     manutenção" e nada mais. Toda a largura extra da carta vai para a
+     barra, que é o que se compara.
+
+     A ALTURA da faixa, ao contrário, é dividida: quatro motivos numa
+     faixa fixa deixariam a carta com metade da altura das vizinhas e um
+     vão morto embaixo. Aqui as faixas se espalham por ~180px, que é a
+     altura das outras cartas, com piso e teto para a barra não virar
+     nem fio nem tijolo. */
+  const mE = 132, mD = 34, mT = 6, mB = 6;
+  const fila   = Math.max(26, Math.min(46, Math.round(180 / dados.length)));
+  const altura = Math.min(20, Math.round(fila * 0.58));
   const A = mT + dados.length * fila + mB;
   const plot = L - mE - mD;
 
   const barras = dados.map((m, i) => {
     const y = mT + i * fila;
+    const yBarra = y + (fila - altura) / 2;      // barra centrada na faixa
+    const yTexto = y + fila / 2 + 4;             // linha de base no meio
     const larg = (m.valor / max) * plot;
     const dica = `${esc(m.rotulo)}: ${pct(m.valor, inativos)}% dos inativos` +
                  `<span class="l2">${nfmt(m.valor)} instrumento(s) · ${pct(m.valor, acervo)}% do acervo</span>`;
     return `
       <g data-dica="${dica}">
         <rect class="g-alvo" x="0" y="${y}" width="${L}" height="${fila}"/>
-        <text class="g-eixo" x="${mE - 8}" y="${y + altura - 3}" text-anchor="end">${esc(m.rotulo)}</text>
-        <path class="g-marca" d="${barraH(mE, y + 2, larg, altura)}"
+        <text class="g-eixo" x="${mE - 8}" y="${yTexto}" text-anchor="end">${esc(m.rotulo)}</text>
+        <path class="g-marca" d="${barraH(mE, yBarra, larg, altura)}"
               fill="var(--serie)" style="animation-delay:${i * 60}ms"/>
-        <text class="g-valor" x="${mE + larg + 6}" y="${y + altura - 3}"
+        <text class="g-valor" x="${mE + larg + 6}" y="${yTexto}"
               style="animation-delay:${300 + i * 60}ms">${nfmt(m.valor)}</text>
       </g>`;
   }).join('');
 
-  el.innerHTML = cartao('Instrumentos inativos',
-    'Quanto do acervo está fora de uso, e por qual motivo. A porcentagem é sobre o acervo inteiro — ativos e inativos.',
-    `<div class="grafico">
-       <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:14px">
-         <span class="g-hero-num"><span data-num>${percentual}</span>%</span>
-         <span class="g-sub">${nfmt(inativos)} de ${nfmt(acervo)} instrumentos do acervo
-           estão inativos</span>
-       </div>
-       <svg viewBox="0 0 ${L} ${A}" role="img"
-            aria-label="Instrumentos inativos por motivo">${barras}</svg>
-       ${tabelaGemea(['Motivo','Instrumentos','% dos inativos','% do acervo'],
-          dados.map(m => [m.rotulo, nfmt(m.valor),
-                          pct(m.valor, inativos) + '%', pct(m.valor, acervo) + '%']))}
-     </div>`);
+  alvo.innerHTML = `
+    <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:14px">
+      <span class="g-hero-num"><span data-num>${percentual}</span>%</span>
+      <span class="g-sub">${nfmt(inativos)} de ${nfmt(acervo)} instrumentos do acervo
+        estão inativos</span>
+    </div>
+    <svg viewBox="0 0 ${L} ${A}" role="img"
+         aria-label="Instrumentos inativos por motivo">${barras}</svg>
+    ${tabelaGemea(['Motivo','Instrumentos','% dos inativos','% do acervo'],
+       dados.map(m => [m.rotulo, nfmt(m.valor),
+                       pct(m.valor, inativos) + '%', pct(m.valor, acervo) + '%']))}`;
 
-  animarNumero(el.querySelector('[data-num]'), percentual, 700);
-  ligarDica(el.querySelector('.grafico'));
+  animarNumero(alvo.querySelector('[data-num]'), percentual, 700);
+  ligarDica(alvo);
 }
 
 /* =====================================================================
@@ -310,11 +361,14 @@ export function pareto(el, { familias, totalAtivos = 0 }){
     return;
   }
 
-  const L = 360, A = 210;
+  const { alvo, L } = moldura(el, 'Concentração das pendências',
+    'Famílias com instrumentos descalibrados ou vencendo. A linha é o acumulado — atacar as primeiras barras resolve a maior parte.');
+
+  const A = 210;
   const mE = 10, mD = 10, mT = 20, mB = 46;
   const larguraPlot = L - mE - mD, alturaPlot = A - mT - mB;
   const faixa = larguraPlot / dados.length;
-  const larguraBarra = Math.min(34, faixa - 12);
+  const larguraBarra = Math.max(12, Math.min(58, faixa - 16));
   const yDe = v => mT + alturaPlot - (v / total) * alturaPlot;
 
   let acumulado = 0;
@@ -345,28 +399,25 @@ export function pareto(el, { familias, totalAtivos = 0 }){
             fill="var(--serie-2)" stroke="var(--surface)" stroke-width="2"
             style="animation-delay:${500 + k * 45}ms"/>`).join('');
 
-  el.innerHTML = cartao('Concentração das pendências',
-    'Famílias com instrumentos descalibrados ou vencendo. A linha é o acumulado — atacar as primeiras barras resolve a maior parte.',
-    `<div class="grafico">
-       <svg viewBox="0 0 ${L} ${A}" role="img"
-            aria-label="Pendências de calibração por família, com acumulado">
-         <line class="g-base" x1="${mE}" y1="${mT + alturaPlot}" x2="${L - mD}" y2="${mT + alturaPlot}"/>
-         ${barras}
-         <path class="g-traco" d="${linha}" pathLength="100" fill="none" stroke="var(--serie-2)"
-               stroke-width="2" stroke-linejoin="round" stroke-linecap="round"
-               style="animation-delay:.28s"/>
-         ${marcadores}
-         <text class="g-valor" x="${cruza.x}" y="${cruza.y - 12}" text-anchor="middle"
-               fill="var(--serie-2)" style="animation-delay:.72s">${pct(cruza.acc, total)}%</text>
-       </svg>
-       <div class="g-legenda">
-         <div class="item"><span class="sw" style="background:var(--serie)"></span>Pendências da família</div>
-         <div class="item"><span class="sw linha" style="background:var(--serie-2)"></span>Acumulado</div>
-       </div>
-       ${tabelaGemea(['Família','Pendentes','% sob controle','Acumulado','% acumulado'],
-          pontos.map(p => [p.f.rotulo, nfmt(p.f.valor), pct(p.f.valor, totalAtivos)+'%',
-                           nfmt(p.acc), pct(p.acc, total)+'%']))}
-     </div>`);
+  alvo.innerHTML = `
+    <svg viewBox="0 0 ${L} ${A}" role="img"
+         aria-label="Pendências de calibração por família, com acumulado">
+      <line class="g-base" x1="${mE}" y1="${mT + alturaPlot}" x2="${L - mD}" y2="${mT + alturaPlot}"/>
+      ${barras}
+      <path class="g-traco" d="${linha}" pathLength="100" fill="none" stroke="var(--serie-2)"
+            stroke-width="2" stroke-linejoin="round" stroke-linecap="round"
+            style="animation-delay:.28s"/>
+      ${marcadores}
+      <text class="g-valor" x="${cruza.x}" y="${cruza.y - 12}" text-anchor="middle"
+            fill="var(--serie-2)" style="animation-delay:.72s">${pct(cruza.acc, total)}%</text>
+    </svg>
+    <div class="g-legenda">
+      <div class="item"><span class="sw" style="background:var(--serie)"></span>Pendências da família</div>
+      <div class="item"><span class="sw linha" style="background:var(--serie-2)"></span>Acumulado</div>
+    </div>
+    ${tabelaGemea(['Família','Pendentes','% sob controle','Acumulado','% acumulado'],
+       pontos.map(p => [p.f.rotulo, nfmt(p.f.valor), pct(p.f.valor, totalAtivos)+'%',
+                        nfmt(p.acc), pct(p.acc, total)+'%']))}`;
 
-  ligarDica(el.querySelector('.grafico'));
+  ligarDica(alvo);
 }
