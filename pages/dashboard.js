@@ -21,8 +21,17 @@ import { meuNome } from '../auth.js';
 let desligarRealtime = null;
 let elRaiz = null;
 
+/* Os gráficos são desenhados em escala 1:1 sobre a largura medida da
+   carta (ver moldura() em components/graficos.js), então mudar o tamanho
+   da janela exige redesenhá-los. Guardar o último recorte evita ir ao
+   servidor de novo só porque alguém arrastou a borda da janela. */
+let ultimoRecorte = null;
+let aoRedimensionar = null;
+
 export function destroy(){
   if (desligarRealtime){ desligarRealtime(); desligarRealtime = null; }
+  if (aoRedimensionar){ window.removeEventListener('resize', aoRedimensionar); aoRedimensionar = null; }
+  ultimoRecorte = null;
   elRaiz = null;
 }
 
@@ -50,6 +59,10 @@ export async function render(container){
 
   desligarRealtime = ouvir('tela-dashboard', ['instrumentos','calibracoes','movimentacoes'],
     debounce(() => carregar(true), 900));
+
+  // Redesenha só os gráficos, com os dados que já estão na mão.
+  aoRedimensionar = debounce(() => { if (ultimoRecorte) graficos(ultimoRecorte); }, 200);
+  window.addEventListener('resize', aoRedimensionar);
 }
 
 /* ==================================================================== */
@@ -108,8 +121,10 @@ async function carregar(silencioso = false){
 
   indicadores({ ativos, sobControle, referencias, inativos, descalibrados, proximos,
                 calibrados, standby, solicitados, externas, emprestimos, alerta });
-  graficos({ ativos, sobControle, referencias, inativos, acervo: instrumentos.length,
-             descalibrados, proximos, calibrados, standby, solicitados, externas });
+
+  ultimoRecorte = { ativos, sobControle, referencias, inativos, acervo: instrumentos.length,
+                    descalibrados, proximos, calibrados, standby, solicitados, externas };
+  graficos(ultimoRecorte);
   listas({ alvo, descalibrados, proximos, emprestimos, alerta });
 
   const d = new Date();
