@@ -196,11 +196,17 @@ export async function abrirDetalhe(id, container){
     titulo: `${i.tag} · ${i.descricao}`,
     largo: true,
     corpo: `
+      <!-- Standby NÃO aparece aqui, e a ausência é decisão: ele era dito
+           três vezes na mesma tela — a tarja de situação já diz "Standby
+           (relógio parado)", e havia ainda uma segunda tarja idêntica e
+           um aviso logo abaixo. Standby é uma escolha feita AO registrar
+           a calibração, então quem conta essa história é a linha daquela
+           calibração no histórico. Na ficha, o que resta dele é o que
+           importa em consulta: "Próxima calibração — · sem contagem". -->
       <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px">
         ${badge(i.status_efetivo)}
         ${i.condicao_fisica === 'inativo' ? '<span class="bdg s-inativo">Inativo</span>' : ''}
         ${i.emprestado ? `<span class="bdg s-solicitado">Emprestado — ${esc(i.emprestado_para)}</span>` : ''}
-        ${i.standby ? `<span class="bdg s-standby_pausado">Standby${i.data_inicio_relogio ? ' (relógio ligado)' : ' (relógio parado)'}</span>` : ''}
       </div>
 
       ${inativo
@@ -209,8 +215,6 @@ export async function abrirDetalhe(id, container){
         ? `<div class="warn-box i"><b>Padrão de aferição.</b> Instrumento de referência não tem
              exigência de calibração periódica neste controle: ele não vence e não entra na fila
              de trabalho da metrologia.</div>` : ''}
-      ${i.standby && !i.data_inicio_relogio
-        ? `<div class="warn-box i fixa">Relógio de validade <b>parado</b>: a contagem começa na primeira saída deste instrumento.</div>` : ''}
 
       <div class="sec-title">Ficha</div>
       <div class="kv">
@@ -371,8 +375,13 @@ function formSolicitarCalibracao(i, container){
 
           bt.disabled = true; bt.textContent = 'Salvando…';
           try {
+            /* A rastreabilidade entra SEMPRE na justificativa, com a
+               observação depois dela quando houver. É neste evento — e
+               só neste — que ela aparece no histórico do instrumento;
+               se ficasse condicionada à observação estar vazia, quem
+               escrevesse uma observação perderia o número da vista. */
             await definirStatusWorkflow(i.id, 'solicitado',
-              obs || 'Calibração solicitada — rastreabilidade ' + pedido, pedido);
+              'Rastreabilidade ' + pedido + (obs ? ' · ' + obs : ''), pedido);
             fechar();
             toast(`Calibração de ${i.tag} solicitada · ${pedido}.`, 'success');
             if (container) carregar(container, true);
