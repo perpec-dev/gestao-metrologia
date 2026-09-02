@@ -304,9 +304,11 @@ function listas({ alvo, descalibrados, proximos, emprestimos, alerta }){
       </div>
       <div class="card-body tight">
         ${emprestimos.length ? `
-          ${alertas.length ? `<div class="warn-box w">
+          <!-- 'fixa': isto é o número do dia, não explicação de tela.
+               Aviso operacional não se guarda atrás de um clique. -->
+          ${alertas.length ? `<div class="warn-box w fixa">
             <b>${alertas.length}</b> empréstimo(s) passaram do prazo. Cobre a devolução.</div>` : ''}
-          ${externos.length ? `<div class="warn-box i">
+          ${externos.length ? `<div class="warn-box i fixa">
             <b>${externos.length}</b> instrumento(s) estão fora da empresa (empréstimo externo).</div>` : ''}
           ${emprestimos.map(m => `
             <div class="rec ${m.em_alerta ? 's-descalibrado' : 's-solicitado'}">

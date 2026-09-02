@@ -294,7 +294,7 @@ function selecionar(i, container){
       </div>
     </div>
     ${liberado ? '' : `<div class="warn-box e" style="margin-top:10px">${motivoBloqueio(i)}</div>`}
-    ${i.standby && !i.data_inicio_relogio ? `<div class="warn-box w" style="margin-top:10px">
+    ${i.standby && !i.data_inicio_relogio ? `<div class="warn-box w fixa" style="margin-top:10px">
       Este instrumento está em <b>standby</b>. Ao registrar esta saída, o relógio de validade
       começa a contar e a próxima data de calibração passa a ser calculada a partir de hoje.</div>` : ''}`;
 
@@ -413,7 +413,7 @@ async function carregarAbertos(){
     const atrasados = lista.filter(m => m.em_alerta);
     const emAlerta = atrasados.length;
     el.innerHTML = `
-      ${emAlerta ? `<div class="warn-box w">
+      ${emAlerta ? `<div class="warn-box w fixa">
         <b>${emAlerta}</b> empréstimo(s) passaram do prazo de alerta.
         <div style="margin-top:9px">
           <button class="btn btn-outline btn-sm" id="btNotificarTodos">
@@ -575,7 +575,7 @@ function modalNotificarTodos(atrasados){
         Cada botão abre a mensagem pronta no seu cliente de e-mail — você confere
         e envia.
       </div>
-      ${semEmail.length ? `<div class="warn-box w">
+      ${semEmail.length ? `<div class="warn-box w fixa">
         <b>${semEmail.length}</b> setor(es) sem e-mail cadastrado:
         ${semEmail.map(([s]) => esc(s)).join(', ')}.
         Cadastre em <b>Administração › E-mails por setor</b>.</div>` : ''}

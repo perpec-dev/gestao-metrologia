@@ -210,7 +210,7 @@ export async function abrirDetalhe(id, container){
              exigência de calibração periódica neste controle: ele não vence e não entra na fila
              de trabalho da metrologia.</div>` : ''}
       ${i.standby && !i.data_inicio_relogio
-        ? `<div class="warn-box i">Relógio de validade <b>parado</b>: a contagem começa na primeira saída deste instrumento.</div>` : ''}
+        ? `<div class="warn-box i fixa">Relógio de validade <b>parado</b>: a contagem começa na primeira saída deste instrumento.</div>` : ''}
 
       <div class="sec-title">Ficha</div>
       <div class="kv">
@@ -241,7 +241,9 @@ export async function abrirDetalhe(id, container){
 
       <div class="sec-title">Situação de trabalho</div>
       ${inativo ? `
-        <div class="warn-box w" style="margin-bottom:0">
+        <!-- 'fixa': é a resposta para "cadê os botões?". Fechada, a
+             pergunta ficaria sem resposta visível. -->
+        <div class="warn-box w fixa" style="margin-bottom:0">
           Instrumento inativo não participa do fluxo de calibração — ele pode estar
           não encontrado, em manutenção ou segregado. Para voltar a solicitar, enviar
           ou calibrar, <b>reative-o no Inventário</b> primeiro.

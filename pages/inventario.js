@@ -439,7 +439,8 @@ function modalReativar(inst, container){
   abrirModal({
     titulo: `Reativar — ${inst.tag}`,
     corpo: `
-      <div class="warn-box i">
+      <!-- 'fixa': aqui não é dica, é o dado do instrumento. -->
+      <div class="warn-box i fixa">
         Motivo atual da inativação: <b>${esc(inst.motivo_inativo || '—')}</b><br>
         ${esc(inst.justificativa_inativo || '')}
       </div>

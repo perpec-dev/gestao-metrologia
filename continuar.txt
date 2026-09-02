@@ -1,0 +1,30 @@
+O que mudou, item a item
+1 · Pedido de compra na solicitação — O campo saiu de "Tornar calibrado" e virou o modal Solicitar calibração. O pedido fica guardado em instrumentos.pedido_calibracao, aparece na ficha durante todo o ciclo, e o servidor o copia para o certificado e zera a coluna quando a calibração é registrada. Voltar para descalibrado desvincula (a tela avisa antes).
+
+2 · Recebimento absorvido pelo Cadastro — pages/recebimento.js foi removido e a rota também. O que separava as telas era a documentação de entrada, hoje um bloco opcional: preencheu NF ou pedido → origem = 'recebimento'; em branco → 'avulso'. #/recebimento redireciona para #/cadastro — favoritos antigos não caem no painel.
+
+3 · Classificação do instrumento — Primeiro campo do formulário. Em Referência o formulário encolhe para os 6 campos que você pediu (tag/rastreabilidade, descrição, fabricante, nº de série, data de cadastro, observações) e somem resolução, localização, standby, documento de entrada, inspeção e certificado — some, não fica cinza. Sem exigência de calibração: novo status_efetivo = 'referencia', data_proxima nula, fora do painel e da fila de Calibração (com um "Mostrar referências" para trazê-las). Continuam emprestáveis.
+
+4 · Instrumento inativo — Os três botões sumiram da ficha, substituídos por uma explicação. A trava também está no banco: definir_status_workflow() e registrar_calibracao() recusam condicao_fisica = 'inativo'.
+
+5 · Motivos novos — Não encontrado, Necessário manutenção e Outros. "Outros" abre um campo obrigatório Descrição da segregação, que entra na justificativa da auditoria prefixado por Segregação:.
+
+6 · Vencimento no fim do mês — 20/08/2025 + 12 meses = 31/08/2026. Usa date_trunc + 1 mês - 1 dia, que acerta fevereiro e bissexto sozinho. Como a data gravada é a real, mantive o dia visível — 31/08/2026 é verdade, não arredondamento. Ligável/desligável em Administração → Parâmetros.
+
+7 · Notificação de devolução — Nova aba Administração → E-mails por setor (só admin grava). Em Empréstimo → Em aberto, cada atrasado ganha Notificar responsável, e há um botão em lote que manda um e-mail por setor. Disponível para metrologista também, como você pediu.
+
+8 · Filtro de motivo nos relatórios — Escolher "Inativos" libera o select de motivo. Nesse recorte a prévia e as exportações ganham colunas de motivo e justificativa; no PDF elas tomam o lugar da localização.
+
+9 · Inativação de referências — Mesmo fluxo, mesmos campos. O Inventário ganhou filtro e coluna de classificação e um KPI Referências.
+
+Para subir
+No SQL Editor, nesta ordem: 07_revisao.sql → 01_schema.sql → 02_rls.sql → 03_views.sql. O 07 cria colunas/tabela/config; as funções e a view vêm depois. Atualizei 01–04 também, então instalação nova só roda 01–05.
+
+Um detalhe que teria quebrado a migração: vw_instrumentos_status expande i.*, e as duas colunas novas entram no meio da lista — create or replace view recusaria. Pus um drop view antes, com a explicação no arquivo.
+
+Duas coisas que deixei na sua mão
+Vencimentos que já existem. A regra do fim do mês vale para as próximas calibrações. O acervo atual fica com data no dia exato até ser recalibrado — um ano de dois padrões convivendo. O item 6 do 07_revisao.sql tem o comando pronto, comentado, com uma consulta de conferência antes. Não roda sozinho porque reescrever validade em massa é decisão sua. O ajuste só empurra para a frente dentro do mesmo mês: ninguém passa a vencer mais cedo.
+
+Envio automático de e-mail. Entreguei o cadastro + notificação com um clique, que era a opção que você escolheu. Disparo sozinho, sem ninguém clicar, precisa de Edge Function no Supabase + cron + conta de envio (Resend/SMTP) — me avise se quiser que eu monte.
+
+Verifiquei sintaxe de todos os módulos, consistência de imports/exports e os ids consultados pelo JS contra o HTML gerado. O que não consegui rodar foi o SQL: não há Postgres nem Docker nesta máquina, então os arquivos foram revisados à mão, não executados

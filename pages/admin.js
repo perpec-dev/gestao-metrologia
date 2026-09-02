@@ -337,7 +337,7 @@ async function abaEmails(el){
       um e-mail já preenchido para o setor que está com o instrumento. Metrologista também
       pode notificar; cadastrar e alterar é do administrador.
     </div>
-    ${semEmail ? `<div class="warn-box w">
+    ${semEmail ? `<div class="warn-box w fixa">
       <b>${semEmail}</b> setor(es) ainda sem e-mail. Para eles o botão de notificar
       fica desabilitado e a cobrança volta a ser feita no braço.</div>` : ''}
 
@@ -428,7 +428,10 @@ async function abaManutencao(el){
   })).filter(f => f.qtd > 0);
 
   el.innerHTML = `
-    <div class="warn-box w">
+    <!-- 'fixa': aviso que precede ação destrutiva fica aberto. Guardar
+         atrás de um clique o texto que explica o estrago é convidar o
+         usuário a não lê-lo. -->
+    <div class="warn-box w fixa">
       <b>O que "apagar" significa aqui.</b> Some o instrumento e, por cascata, todas as
       calibrações, inspeções, movimentações e documentos dele. <b>Não</b> some a trilha de
       auditoria — ela é somente-inclusão, e o próprio apagamento entra nela.

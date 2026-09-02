@@ -395,7 +395,7 @@ function previa(el, linhas){
         <span class="right">${validos.length} de ${itens.length} prontos</span></div>
       <div class="card-body">
         ${itens.length - validos.length
-          ? `<div class="warn-box w">${itens.length - validos.length} linha(s) serão ignoradas.
+          ? `<div class="warn-box w fixa">${itens.length - validos.length} linha(s) serão ignoradas.
              Corrija a planilha e importe de novo se elas forem necessárias.</div>` : ''}
         <div class="tbl-wrap"><table class="tbl" style="min-width:1040px">
           <thead><tr><th>Linha</th><th>Família</th><th>Tipo</th><th>Descrição</th>

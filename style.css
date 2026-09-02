@@ -372,6 +372,42 @@ details.card[open] .chevron svg{transform:rotate(180deg);stroke:var(--red)}
 .warn-box.e{border-color:var(--status-descalibrado);background:var(--status-descalibrado-bg)}
 .warn-box.g{border-color:var(--status-calibrado);background:var(--status-calibrado-bg)}
 
+/* ---------------------------------------------------------------------
+   DICA — a tarja explicativa guardada atrás de uma lâmpada.
+
+   Fechada, é uma pastilha discreta com o ASSUNTO escrito: ocupa uma
+   linha curta e some da leitura de quem já sabe. Aberta, vira a mesma
+   tarja de antes, com a cor de sempre. Duas lâmpadas seguidas ficam lado
+   a lado porque a pastilha é inline-block — abrir uma delas devolve o
+   bloco inteiro. Conversão em components/dicas.js.
+   --------------------------------------------------------------------- */
+.dica{display:inline-block;max-width:100%;margin:0 6px 12px 0;vertical-align:top;
+      border:1px solid var(--border);border-radius:var(--r);background:var(--surface);
+      transition:border-color .16s,background .16s}
+.dica[open]{display:block;margin-right:0;border-left-width:3px}
+.dica > summary{display:flex;align-items:center;justify-content:center;cursor:pointer;
+                list-style:none;padding:5px 8px;color:var(--muted);user-select:none;
+                border-radius:calc(var(--r) - 1px);transition:color .14s,background .14s}
+.dica > summary::-webkit-details-marker{display:none}
+.dica > summary:hover{color:var(--text);background:var(--surface2)}
+.dica .lamp{width:15px;height:15px;flex-shrink:0;stroke:currentColor;fill:none;stroke-width:1.8;
+            stroke-linecap:round;stroke-linejoin:round}
+/* Aberta, a lâmpada acende: o mesmo desenho, agora preenchido. */
+.dica[open] .lamp{fill:currentColor;fill-opacity:.16;stroke-width:2}
+.dica-corpo{padding:0 14px 12px 13px;margin-top:-2px;font-size:13px;line-height:1.55;
+            color:var(--text2);animation:entra .2s var(--saida)}
+.dica-corpo b{color:var(--dark);font-weight:700}
+.dica-corpo code{font-family:ui-monospace,"Cascadia Mono",Consolas,monospace;font-size:12px;
+                 background:var(--surface3);padding:1px 5px;border-radius:4px}
+.dica-corpo > :not(:first-child){margin-top:8px}
+
+.dica.d-i > summary{color:var(--status-solicitado)}
+.dica.d-i[open]{border-color:var(--status-solicitado);background:var(--status-solicitado-bg)}
+.dica.d-i[open] > summary:hover{background:transparent}
+.dica.d-w > summary{color:var(--status-proximo-vencimento)}
+.dica.d-w[open]{border-color:var(--status-proximo-vencimento);background:var(--status-proximo-bg)}
+.dica.d-w[open] > summary:hover{background:transparent}
+
 .empty-state{text-align:center;padding:3rem 1rem;color:var(--muted);font-size:13.5px;
              border:1px dashed var(--border2);border-radius:var(--r-lg);background:var(--surface2)}
 
@@ -671,6 +707,11 @@ table.tbl input[type=checkbox]{width:16px;height:16px;accent-color:var(--red);cu
 
 @media print{
   .sticky-top,.act-bar,.filtros,.btn,.tabs,.sel-bar{display:none!important}
+  /* No papel não há clique: a dica que ficou fechada não pode virar uma
+     pastilha sem conteúdo. Melhor esforço — o navegador ainda decide se
+     revela o miolo de um <details> fechado. */
+  .dica{display:block;border-color:var(--border)}
+  .dica > .dica-corpo{display:block}
   body{background:#fff}
   .card{break-inside:avoid;box-shadow:none;border-color:#ccc;animation:none}
 }

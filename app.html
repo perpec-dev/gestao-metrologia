@@ -64,6 +64,7 @@ import { CONFIG } from './config.js';
 import { exigirSessao, vigiarSessao, sair, perfil, souAdmin, meuNome } from './auth.js';
 import { carregarConfig, configFaltando, ouvir, listarInstrumentos } from './supabase.js';
 import { montarNav, iniciarRouter, contadorNav } from './router.js';
+import { ligarDicas } from './components/dicas.js';
 import { p2, toast, msgErro } from './utils.js';
 
 /* ---- Identidade da tela ---- */
@@ -139,6 +140,13 @@ async function atualizarContadores(){
   elPapel.className = 'papel' + (souAdmin() ? ' admin' : '');
 
   montarNav(document.getElementById('nav'), souAdmin());
+
+  /* As tarjas explicativas viram lâmpada: o texto continua ali, fechado,
+     a um clique. Ligado antes do roteador para que a primeira tela já
+     nasça convertida — e vale para tudo que for pintado depois, telas e
+     modais, sem que nenhuma página precise saber disto. */
+  ligarDicas(document.body);
+
   iniciarRouter(document.getElementById('tela'));
 
   document.getElementById('gate').hidden = true;
