@@ -469,15 +469,23 @@ details.card[open] .chevron svg{transform:rotate(180deg);stroke:var(--red)}
 @media(min-width:820px){.graficos{grid-template-columns:repeat(2,1fr)}}
 .graficos .card{margin-bottom:0;display:flex;flex-direction:column}
 .graficos .card-body{flex:1;display:flex;flex-direction:column}
-/* O texto do SVG escala junto com o viewBox: sem teto de largura, uma
-   carta de 660px renderiza o número do centro do anel em 68px. O teto
-   vale para o BLOCO inteiro — desenho, legenda e tabela-gêmea — e não só
-   para o SVG: capar apenas o desenho deixaria a legenda com o rótulo à
-   esquerda e o número a 600px de distância, dois elementos que precisam
-   ser lidos no mesmo movimento dos olhos. */
-.grafico{position:relative;display:flex;flex-direction:column;flex:1;
-         width:100%;max-width:470px;margin-left:auto;margin-right:auto}
+/* Sem teto de largura: o gráfico ocupa a carta inteira. O texto do SVG
+   escalaria junto com o desenho, então o desenho é gerado em escala 1:1
+   — a largura real é medida antes e vira o viewBox. Ver moldura() em
+   components/graficos.js. */
+.grafico{position:relative;display:flex;flex-direction:column;flex:1;width:100%}
 .grafico svg{display:block;width:100%;height:auto;overflow:visible}
+
+/* O anel é a exceção: círculo não estica. Numa carta larga quem ocupa a
+   sobra é a legenda, que vai para o lado dele — e a carta economiza seis
+   linhas de altura. Estreitou, o flex quebra e volta a empilhar. */
+.arco-wrap{display:flex;align-items:center;gap:20px;flex-wrap:wrap}
+.arco-wrap > svg{flex:0 1 340px;max-width:340px}
+.arco-wrap > .g-legenda{flex:1 1 210px;margin-top:0;padding-top:0;border-top:none}
+@media(max-width:600px){
+  .arco-wrap > svg{flex-basis:100%;max-width:none}
+  .arco-wrap > .g-legenda{margin-top:6px;padding-top:12px;border-top:1px solid var(--hair)}
+}
 .g-sub{font-size:11.5px;color:var(--muted);line-height:1.45}
 .g-eixo{font-size:10.5px;fill:var(--muted);font-variant-numeric:tabular-nums}
 .g-valor{font-size:11px;font-weight:700;fill:var(--text2);font-variant-numeric:tabular-nums}
