@@ -12,7 +12,7 @@ import { esc, fmtDT, fmtData, hojeISO, p2, slug, chave, toast, msgErro, debounce
          lerXLSX, lerPDFMake, baixarBlob } from '../utils.js';
 import { listarInstrumentos, listarEmprestimosAbertos, registrarMovimentacao,
          registrarDevolucao, listarHistoricoEmprestimos, enviarArquivo,
-         cfgLista, ouvir, abrirArquivo } from '../supabase.js';
+         listarEmailsSetor, cfgLista, ouvir, abrirArquivo } from '../supabase.js';
 import { CONFIG } from '../config.js';
 import { badge, PODE_EMPRESTAR } from '../components/status-badge.js';
 import { abrirModal } from '../components/modal.js';
@@ -28,6 +28,10 @@ let raiz = null;
    O recorte é congelado no momento de consultar, não lido do formulário
    na hora de exportar — entre uma coisa e outra o usuário pode ter mexido
    nos filtros sem clicar em Consultar. */
+/* E-mail do responsável por setor, cadastrado na Administração.
+   Carregado uma vez por visita: é lista curta e quase estática. */
+let emailsSetor = new Map();
+
 let historico = [];
 let histConsultado = false;   // consulta vazia também conta: não repetir
 let tabelaHist = null;
@@ -36,6 +40,7 @@ let descHist = { titulo:'Histórico de empréstimos', linha:'' };
 export function destroy(){
   if (desligarRealtime){ desligarRealtime(); desligarRealtime = null; }
   instrumentos = []; escolhido = null; raiz = null;
+  emailsSetor = new Map();
   historico = []; histConsultado = false; tabelaHist = null;
 }
 
@@ -198,6 +203,12 @@ export async function render(container, params = []){
   }));
 
   instrumentos = await listarInstrumentos();
+
+  // Sem e-mail cadastrado a tela continua funcionando: só o botão de
+  // notificar fica desabilitado, explicando por quê.
+  try { emailsSetor = new Map((await listarEmailsSetor()).map(e => [e.setor, e])); }
+  catch (e){ console.warn('[metrologia] e-mails por setor:', e); }
+
   ligarAutocomplete(container);
   ligarFormulario(container);
   ligarHistorico(container);
@@ -398,9 +409,15 @@ async function carregarAbertos(){
     const lista = await listarEmprestimosAbertos();
     if (!lista.length){ el.innerHTML = htmlVazio('Nenhum instrumento emprestado no momento.'); return; }
 
-    const emAlerta = lista.filter(m => m.em_alerta).length;
+    const atrasados = lista.filter(m => m.em_alerta);
+    const emAlerta = atrasados.length;
     el.innerHTML = `
-      ${emAlerta ? `<div class="warn-box w"><b>${emAlerta}</b> empréstimo(s) passaram do prazo de alerta.</div>` : ''}
+      ${emAlerta ? `<div class="warn-box w">
+        <b>${emAlerta}</b> empréstimo(s) passaram do prazo de alerta.
+        <div style="margin-top:9px">
+          <button class="btn btn-outline btn-sm" id="btNotificarTodos">
+            Notificar os setores responsáveis</button>
+        </div></div>` : ''}
       ${lista.map(m => `
         <div class="rec ${m.em_alerta ? 's-descalibrado' : 's-solicitado'}">
           <div class="rec-in">
@@ -420,6 +437,12 @@ async function carregarAbertos(){
               <button class="btn btn-green btn-sm" data-devolver="${esc(m.id)}" data-tag="${esc(m.tag)}">
                 Registrar devolução</button>
               ${m.termo_path ? `<button class="btn btn-outline btn-sm" data-termo="${esc(m.termo_path)}">Ver termo</button>` : ''}
+              <button class="btn btn-outline btn-sm" data-notificar="${esc(m.id)}"
+                      ${emailsSetor.has(m.setor) ? '' : 'disabled'}
+                      title="${emailsSetor.has(m.setor)
+                        ? 'Abre o e-mail já preenchido para ' + esc(emailsSetor.get(m.setor).email)
+                        : 'Sem e-mail cadastrado para o setor ' + esc(m.setor) + '. Cadastre em Administração › E-mails por setor.'}">
+                ✉ Notificar responsável</button>
             </div>
           </div>
         </div>`).join('')}`;
@@ -431,11 +454,139 @@ async function carregarAbertos(){
 
     el.querySelectorAll('[data-devolver]').forEach(b => b.addEventListener('click', () =>
       modalDevolucao(b.dataset.devolver, b.dataset.tag)));
+
+    el.querySelectorAll('[data-notificar]').forEach(b => b.addEventListener('click', () => {
+      const m = lista.find(x => x.id === b.dataset.notificar);
+      if (m) abrirEmail([m]);
+    }));
+
+    const btTodos = el.querySelector('#btNotificarTodos');
+    if (btTodos) btTodos.addEventListener('click', () => modalNotificarTodos(atrasados));
   } catch (e){
     el.innerHTML = `<div class="warn-box e">${esc(msgErro(e))}</div>`;
   }
 }
 
+/* ==================================================================== */
+/* COBRANÇA DE DEVOLUÇÃO POR E-MAIL                                     */
+/*                                                                      */
+/* O e-mail sai do cliente de e-mail da própria pessoa, com o texto     */
+/* pronto: a mensagem chega assinada por quem cobra e a resposta volta  */
+/* para ela, não para uma caixa de sistema que ninguém lê. O que o      */
+/* sistema faz é o trabalho chato — juntar destinatário, tags, datas e  */
+/* prazos sem ninguém precisar copiar da tela.                          */
+/* ==================================================================== */
+
+/** Uma linha do corpo do e-mail, por instrumento. */
+function linhaEmail(m){
+  return [
+    `• ${m.tag} — ${m.descricao}`,
+    `  Responsável: ${m.responsavel}`,
+    `  Saída em ${fmtDT(m.data_saida)} · fora há ${m.dias_fora} dia(s)` +
+      (m.prazo_alerta_dias ? ` (prazo: ${m.prazo_alerta_dias} dias)` : ''),
+    m.data_prevista_retorno ? `  Devolução prevista: ${fmtDT(m.data_prevista_retorno)}` : null
+  ].filter(Boolean).join('\n');
+}
+
+function montarEmail(setor, itens){
+  const contato = emailsSetor.get(setor);
+  const plural  = itens.length > 1;
+
+  const assunto = `[Metrologia] Devolução pendente — ${
+    plural ? `${itens.length} instrumentos · ${setor}` : `${itens[0].tag} · ${setor}`}`;
+
+  const corpo = [
+    contato?.responsavel ? `Prezado(a) ${contato.responsavel},` : 'Prezado(a),',
+    '',
+    plural
+      ? `Os instrumentos abaixo estão com o setor ${setor} além do prazo estabelecido pela Metrologia:`
+      : `O instrumento abaixo está com o setor ${setor} além do prazo estabelecido pela Metrologia:`,
+    '',
+    itens.map(linhaEmail).join('\n\n'),
+    '',
+    'Pedimos a gentileza de sinalizar ao responsável e providenciar a devolução ao setor de Metrologia.',
+    '',
+    'Atenciosamente,',
+    meuNome() || 'Metrologia',
+    `Metrologia — ${CONFIG.EMPRESA}`,
+    CONFIG.DOC_REF
+  ].join('\n');
+
+  return { para: contato?.email || '', assunto, corpo };
+}
+
+/** Abre o cliente de e-mail com tudo preenchido. */
+function abrirEmail(itens){
+  const setor = itens[0].setor;
+  if (!emailsSetor.has(setor)){
+    toast(`Sem e-mail cadastrado para o setor ${setor}. Peça ao administrador para cadastrar em Administração › E-mails por setor.`, 'error');
+    return;
+  }
+  const { para, assunto, corpo } = montarEmail(setor, itens);
+  // encodeURIComponent, e não encodeURI: o corpo tem quebras de linha,
+  // acento e "&" — encodeURI deixaria o "&" partir a URL ao meio.
+  window.location.href = `mailto:${encodeURIComponent(para)}` +
+    `?subject=${encodeURIComponent(assunto)}&body=${encodeURIComponent(corpo)}`;
+  toast(`E-mail para ${setor} montado no seu cliente de e-mail.`, 'success');
+}
+
+/** Um e-mail por setor: cobrar cinco instrumentos em cinco mensagens
+    separadas é o jeito mais rápido de ninguém responder nenhuma. */
+function modalNotificarTodos(atrasados){
+  const porSetor = new Map();
+  atrasados.forEach(m => {
+    if (!porSetor.has(m.setor)) porSetor.set(m.setor, []);
+    porSetor.get(m.setor).push(m);
+  });
+
+  const grupos = [...porSetor.entries()].sort((a,b) => b[1].length - a[1].length);
+  const semEmail = grupos.filter(([setor]) => !emailsSetor.has(setor));
+
+  abrirModal({
+    titulo: 'Notificar setores responsáveis',
+    largo: true,
+    corpo: `
+      <div class="warn-box i">
+        Um e-mail por setor, com todos os instrumentos atrasados daquele setor.
+        Cada botão abre a mensagem pronta no seu cliente de e-mail — você confere
+        e envia.
+      </div>
+      ${semEmail.length ? `<div class="warn-box w">
+        <b>${semEmail.length}</b> setor(es) sem e-mail cadastrado:
+        ${semEmail.map(([s]) => esc(s)).join(', ')}.
+        Cadastre em <b>Administração › E-mails por setor</b>.</div>` : ''}
+
+      ${grupos.map(([setor, itens]) => {
+        const contato = emailsSetor.get(setor);
+        return `
+        <div class="rec ${contato ? 's-solicitado' : 's-descalibrado'}" style="margin-bottom:10px">
+          <div class="rec-in">
+            <div class="rec-grid">
+              <div><div class="k">Setor</div><div class="v">${esc(setor)}</div></div>
+              <div><div class="k">Instrumentos</div><div class="v">${itens.length}</div></div>
+              <div><div class="k">Destinatário</div><div class="v">${
+                contato ? esc(contato.email) : '<span style="color:var(--status-descalibrado)">não cadastrado</span>'}</div></div>
+              <div><div class="k">Responsável</div><div class="v">${esc(contato?.responsavel || '—')}</div></div>
+            </div>
+            <div style="margin-top:10px;font-size:12.5px;color:var(--muted);line-height:1.6">
+              ${itens.map(m => `${esc(m.tag)} · ${esc(m.responsavel)} · ${esc(m.dias_fora)} d`).join('<br>')}
+            </div>
+            <div class="rec-acts">
+              <button class="btn btn-outline btn-sm" data-setor="${esc(setor)}"
+                      ${contato ? '' : 'disabled'}>✉ Abrir e-mail para ${esc(setor)}</button>
+            </div>
+          </div>
+        </div>`;
+      }).join('')}`,
+    acoes: [{ rotulo:'Fechar', classe:'btn-outline', onClick: f => f() }],
+    aoAbrir: body => {
+      body.querySelectorAll('[data-setor]').forEach(b => b.addEventListener('click', () =>
+        abrirEmail(porSetor.get(b.dataset.setor))));
+    }
+  });
+}
+
+/* ==================================================================== */
 function modalDevolucao(movId, tag){
   abrirModal({
     titulo: `Devolução — ${tag}`,

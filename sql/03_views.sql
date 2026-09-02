@@ -11,6 +11,13 @@
 -- ---------------------------------------------------------------------
 -- 1. STATUS EFETIVO
 -- ---------------------------------------------------------------------
+-- O `drop` é obrigatório, e não uma precaução: esta view expande `i.*`,
+-- então toda coluna nova em `instrumentos` entra NO MEIO da lista de
+-- colunas da view. `create or replace view` recusa renomear coluna, e o
+-- arquivo falharia com "cannot change name of view column". Nenhuma
+-- outra view depende desta; os grants voltam no fim deste mesmo arquivo.
+drop view if exists public.vw_instrumentos_status;
+
 create or replace view public.vw_instrumentos_status as
 select
   i.*,
@@ -31,6 +38,11 @@ select
   (m.id is not null)           as emprestado,
   coalesce(m.setor, i.localizacao_normal) as localizacao_atual,
   case
+    -- Padrão de referência não tem exigência de calibração periódica:
+    -- ele nunca vence, nunca fica "descalibrado" e não entra na fila de
+    -- trabalho da metrologia. A classificação É a situação dele.
+    when i.tipo = 'REFERENCIA'
+      then 'referencia'
     when i.status_workflow in ('solicitado','em_calibracao_externa')
       then i.status_workflow
     when i.status_workflow = 'descalibrado'
@@ -220,7 +232,10 @@ begin
 
   -- 'standby_pausado' só existe para instrumento já calibrado cujo relógio
   -- ainda não partiu; emprestá-lo é justamente o que liga o relógio.
-  if v_status not in ('calibrado','standby_pausado') then
+  -- 'referencia' entra porque o padrão de aferição não tem validade a
+  -- vencer: exigir calibração em dia dele seria exigir uma regra que a
+  -- própria classificação dispensa.
+  if v_status not in ('calibrado','standby_pausado','referencia') then
     raise exception 'O instrumento % não pode sair: situação atual é "%". Só instrumentos calibrados podem ser emprestados.',
       v_tag, v_status;
   end if;

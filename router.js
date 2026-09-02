@@ -10,10 +10,10 @@ import { htmlCarregando, esc, toast, msgErro } from './utils.js';
 export const TELAS = [
   { id:'dashboard',   rotulo:'Painel',      arquivo:'./pages/dashboard.js',
     icone:'<path d="M3 12h7V3H3v9Zm0 9h7v-6H3v6Zm11 0h7v-9h-7v9Zm0-18v6h7V3h-7Z"/>' },
-  { id:'recebimento', rotulo:'Recebimento', arquivo:'./pages/recebimento.js',
-    icone:'<path d="M21 8v13H3V8M1 3h22v5H1zM10 12h4"/>' },
+  /* Recebimento foi absorvido por Cadastro: o que separava as duas telas
+     era a documentação de entrada, hoje um bloco opcional do formulário. */
   { id:'cadastro',    rotulo:'Cadastro',    arquivo:'./pages/cadastro.js',
-    icone:'<path d="M12 5v14M5 12h14"/>' },
+    icone:'<path d="M21 8v13H3V8M1 3h22v5H1zM10 12h4"/>' },
   { id:'calibracao',  rotulo:'Calibração',  arquivo:'./pages/calibracao.js',
     icone:'<path d="M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20ZM12 6v6l4 2"/>' },
   { id:'emprestimo',  rotulo:'Empréstimo',  arquivo:'./pages/emprestimo.js',
@@ -36,11 +36,15 @@ let ehAdmin = false;
     restrita — e a restrição de verdade está no banco, não aqui. */
 export const telasVisiveis = () => TELAS.filter(t => !t.soAdmin || ehAdmin);
 
+/* Telas que mudaram de lugar. Um favorito antigo do navegador não pode
+   cair no painel sem explicação: ele vai para onde a função foi parar. */
+const REDIRECIONAR = { recebimento: 'cadastro' };
+
 /** #/calibracao/uuid-do-instrumento -> { id:'calibracao', params:['uuid…'] } */
 function lerHash(){
   const bruto = (location.hash || '').replace(/^#\/?/, '');
   const partes = bruto.split('/').filter(Boolean);
-  const id = partes[0] || PADRAO;
+  const id = REDIRECIONAR[partes[0]] || partes[0] || PADRAO;
   const existe = telasVisiveis().some(t => t.id === id);
   return { id: existe ? id : PADRAO, params: partes.slice(1) };
 }

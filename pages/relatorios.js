@@ -7,7 +7,7 @@
    ===================================================================== */
 import { esc, fmtData, hojeISO, toast, msgErro, htmlVazio, htmlCarregando,
          lerXLSX, lerPDFMake, baixarBlob, p2, slug } from '../utils.js';
-import { consultarInstrumentos, listarFamilias } from '../supabase.js';
+import { consultarInstrumentos, listarFamilias, cfgLista } from '../supabase.js';
 import { CONFIG } from '../config.js';
 import { criarTabela } from '../components/tabela.js';
 import { badge, classeLinha, rotulo, ORDEM_STATUS, STATUS, textoVencimento } from '../components/status-badge.js';
@@ -19,7 +19,7 @@ let familias = [];
 /* Descrição do recorte que gerou `resultado`. Guardada no momento da
    consulta, não lida do formulário na hora de exportar: entre gerar e
    exportar o usuário pode ter mexido nos filtros sem clicar em Gerar. */
-let descricao = { titulo:'Relatório geral do acervo', linha:'' };
+let descricao = { titulo:'Relatório geral do acervo', linha:'', inativos:false };
 
 export function destroy(){ resultado = []; tabela = null; }
 
@@ -58,15 +58,21 @@ export async function render(container){
               <option value="">Todas</option>
             </select>
           </div>
+          <!-- Só faz sentido com o recorte "inativos": perguntar o motivo
+               de um instrumento ativo é perguntar o motivo de nada. -->
+          <div class="field" id="wMotivo" hidden>
+            <label for="fMotivo">Motivo da inativação</label>
+            <select id="fMotivo"><option value="">Todos os motivos</option></select>
+            <div class="hint">Filtra os inativos por motivo específico.</div>
+          </div>
           <div class="field">
-            <label for="fTipo">Tipo</label>
+            <label for="fTipo">Classificação</label>
             <select id="fTipo">
-              <option value="">Todos</option>
+              <option value="">Todas</option>
               <option value="TMMDE">TMMDE — instrumento de uso</option>
-              <option value="REFERENCIA">Referência</option>
+              <option value="REFERENCIA">Referência — padrão de aferição</option>
             </select>
           </div>
-          <div class="field"></div>
 
           <div class="field">
             <label for="fProxDe">Próxima calibração — de</label>
@@ -112,6 +118,21 @@ export async function render(container){
 
   container.querySelectorAll('[data-atalho]').forEach(b =>
     b.addEventListener('click', () => atalho(container, b.dataset.atalho)));
+
+  /* Motivo só aparece com "Inativos" escolhido, e a lista vem da mesma
+     configuração usada para inativar — sem segunda lista para manter. */
+  const selCond   = container.querySelector('#fCondicao');
+  const selMotivo = container.querySelector('#fMotivo');
+  selMotivo.innerHTML = '<option value="">Todos os motivos</option>' +
+    cfgLista('motivos_inativacao').map(m => `<option value="${esc(m)}">${esc(m)}</option>`).join('');
+
+  const sincronizarMotivo = () => {
+    const inativos = selCond.value === 'inativo';
+    container.querySelector('#wMotivo').hidden = !inativos;
+    if (!inativos) selMotivo.value = '';
+  };
+  selCond.addEventListener('change', sincronizarMotivo);
+  sincronizarMotivo();
 }
 
 /* ==================================================================== */
@@ -122,6 +143,7 @@ function lerFiltros(container){
     status_efetivo: status,
     familia_id:     v('fFamilia'),
     condicao_fisica:v('fCondicao'),
+    motivo_inativo: v('fCondicao') === 'inativo' ? v('fMotivo') : null,
     tipo:           v('fTipo'),
     proxima_de:     v('fProxDe'),
     proxima_ate:    v('fProxAte'),
@@ -153,7 +175,9 @@ function descreverFiltros(f){
     (f.condicao_fisica === 'ativo' ? 'ativos'
      : f.condicao_fisica === 'inativo' ? 'inativos' : 'todas'));
 
-  if (f.tipo) partes.push('Tipo: ' + (f.tipo === 'TMMDE' ? 'TMMDE (uso)' : 'Referência'));
+  if (f.motivo_inativo) partes.push('Motivo da inativação: ' + f.motivo_inativo);
+
+  if (f.tipo) partes.push('Classificação: ' + (f.tipo === 'TMMDE' ? 'TMMDE (uso)' : 'Referência'));
 
   const faixa = (rot, de, ate) => {
     if (de && ate) return `${rot}: ${fmtData(de)} a ${fmtData(ate)}`;
@@ -174,9 +198,11 @@ function descreverFiltros(f){
     const fam = familias.find(x => x.id === f.familia_id);
     if (fam) titulo += ' · ' + fam.nome;
   }
-  if (f.condicao_fisica === 'inativo') titulo += ' · inativos';
+  if (f.condicao_fisica === 'inativo')
+    titulo += f.motivo_inativo ? ' · inativos por ' + f.motivo_inativo.toLowerCase() : ' · inativos';
 
-  return { titulo, linha: partes.join('  ·  ') };
+  return { titulo, linha: partes.join('  ·  '),
+           inativos: f.condicao_fisica === 'inativo' };
 }
 
 function atalho(container, qual){
@@ -196,7 +222,9 @@ function atalho(container, qual){
     set('fProxDe', hojeISO());
     set('fProxAte', iso(new Date(hoje.getFullYear(), hoje.getMonth()+3, hoje.getDate())));
   } else {
-    set('fFamilia',''); set('fTipo',''); set('fCondicao','ativo');
+    set('fFamilia',''); set('fTipo',''); set('fMotivo','');
+    container.querySelector('#fCondicao').value = 'ativo';
+    container.querySelector('#fCondicao').dispatchEvent(new Event('change'));
     container.querySelector('#previa').innerHTML = htmlVazio('Escolha os filtros e clique em "Gerar relatório".');
     resultado = []; tabela = null;
     container.querySelector('#btExcel').disabled = true;
@@ -232,6 +260,9 @@ async function gerar(container){
     return;
   }
 
+  // Relatório de inativos sem o motivo é uma lista de tags sem resposta.
+  const mostrarMotivo = filtros.condicao_fisica === 'inativo';
+
   tabela = criarTabela(alvo, {
     linhas: resultado,
     ordem: { chave:'data_proxima', dir:1 },
@@ -243,6 +274,10 @@ async function gerar(container){
       { chave:'tipo', rotulo:'Tipo', largura:'100px' },
       { chave:'status_efetivo', rotulo:'Situação', largura:'170px', html: l => badge(l.status_efetivo) },
       { chave:'condicao_fisica', rotulo:'Condição', largura:'90px' },
+      ...(mostrarMotivo ? [{ chave:'motivo_inativo', rotulo:'Motivo', largura:'140px',
+            html: l => esc(l.motivo_inativo || '—') },
+          { chave:'justificativa_inativo', rotulo:'Justificativa',
+            html: l => `<span style="font-size:12px">${esc(l.justificativa_inativo || '—')}</span>` }] : []),
       { chave:'ultima_calibracao', rotulo:'Última', largura:'110px', html: l => esc(fmtData(l.ultima_calibracao)) },
       { chave:'data_proxima', rotulo:'Próxima', largura:'110px', html: l => esc(fmtData(l.data_proxima)) },
       { chave:'dias_para_vencer', rotulo:'Vence', classe:'num', largura:'110px',
@@ -256,9 +291,13 @@ async function gerar(container){
 /* ==================================================================== */
 /* Linhas planas — mesma base para Excel e PDF                          */
 /* ==================================================================== */
-const CABECALHOS = ['Tag','Descrição','Família','Tipo','Situação','Condição',
+/* Ordem congelada: o PDF escolhe colunas por ÍNDICE (const cols, abaixo).
+   Campo novo entra no fim — inserir no meio remonta o PDF em silêncio. */
+const CABECALHOS = ['Tag','Descrição','Família','Classificação','Situação','Condição',
                     'Última calibração','Próxima calibração','Vence em','Localização',
-                    'Fabricante','Nº de série','Resolução','Entrada'];
+                    'Fabricante','Nº de série','Resolução','Entrada',
+                    'Motivo da inativação','Justificativa da inativação','Observações'];
+const COL_MOTIVO = 14;   // primeira das duas colunas de inativação
 
 function linhasPlanas(){
   const base = tabela ? tabela.linhas : resultado;
@@ -269,7 +308,8 @@ function linhasPlanas(){
     i.condicao_fisica === 'ativo' ? 'Ativo' : 'Inativo',
     fmtData(i.ultima_calibracao), fmtData(i.data_proxima), textoVencimento(i),
     i.localizacao_atual || '—', i.fabricante || '—', i.num_serie || '—',
-    i.resolucao || '—', fmtData(i.data_entrada)
+    i.resolucao || '—', fmtData(i.data_entrada),
+    i.motivo_inativo || '—', i.justificativa_inativo || '—', i.observacoes || '—'
   ]);
 }
 
@@ -311,7 +351,16 @@ async function exportarPDF(container){
     const emitido = new Date();
 
     // Colunas enxutas: PDF em paisagem ainda tem largura finita.
-    const cols = [0,1,2,4,6,7,8,9];
+    // No relatório de inativos, a localização dá lugar ao motivo — é ele
+    // que a pessoa que recebe o PDF está procurando.
+    // `descricao` foi congelada no momento de gerar: entre gerar e
+    // exportar o usuário pode ter mexido nos filtros sem clicar de novo.
+    const cols = descricao.inativos
+      ? [0,1,2,4,6,COL_MOTIVO,COL_MOTIVO+1]
+      : [0,1,2,4,6,7,8,9];
+    const larguras = descricao.inativos
+      ? ['auto','*','auto','auto','auto','auto','*']
+      : ['auto','*','auto','auto','auto','auto','auto','auto'];
     const cab  = cols.map(i => CABECALHOS[i]);
     const corpo = linhas.map(l => cols.map(i => String(l[i] ?? '—')));
 
@@ -355,7 +404,7 @@ async function exportarPDF(container){
         {
           table: {
             headerRows: 1,
-            widths: ['auto','*','auto','auto','auto','auto','auto','auto'],
+            widths: larguras,
             body: [
               cab.map(t => ({ text:t, bold:true, fontSize:7.5, color:'#F0E6E4', fillColor:'#1A1210' })),
               ...corpo.map(l => l.map(c => ({ text:c, fontSize:8 })))

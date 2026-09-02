@@ -11,7 +11,8 @@
 import { esc, fmtData, fmtDT, toast, msgErro, debounce,
          htmlCarregando, htmlVazio, lembrar, lembrado, p2, animarNumero } from '../utils.js';
 import { listarInstrumentos, listarEmprestimosAbertos, ouvir, cfgInt } from '../supabase.js';
-import { badge, legenda, textoVencimento, STATUS, ORDEM_GRAFICO } from '../components/status-badge.js';
+import { badge, legenda, textoVencimento, STATUS,
+         ORDEM_GRAFICO, ORDEM_STATUS_TMMDE } from '../components/status-badge.js';
 import { arcoSituacao, barrasVencimento, pareto } from '../components/graficos.js';
 import { irPara } from '../router.js';
 import { meuNome } from '../auth.js';
@@ -66,7 +67,12 @@ async function carregar(silencioso = false){
   }
 
   const ativos = instrumentos.filter(i => i.condicao_fisica === 'ativo');
-  const por = s => ativos.filter(i => i.status_efetivo === s);
+  /* O painel é a fila de trabalho da calibração. Padrão de referência
+     não vence, não é cobrado e não entra em nenhum indicador daqui —
+     se entrasse, o total do anel nunca fecharia com a soma dos gomos. */
+  const referencias = ativos.filter(i => i.tipo === 'REFERENCIA');
+  const sobControle = ativos.filter(i => i.tipo !== 'REFERENCIA');
+  const por = s => sobControle.filter(i => i.status_efetivo === s);
 
   const descalibrados = por('descalibrado');
   const proximos      = por('proximo_vencimento')
@@ -77,9 +83,10 @@ async function carregar(silencioso = false){
   const externas      = por('em_calibracao_externa');
   const janela        = cfgInt('dias_proximo_vencimento', 15);
 
-  indicadores({ ativos, instrumentos, descalibrados, proximos, calibrados, standby,
-                solicitados, externas, emprestimos, janela });
-  graficos({ ativos, descalibrados, proximos, calibrados, standby, solicitados, externas });
+  indicadores({ ativos: sobControle, referencias, instrumentos, descalibrados, proximos,
+                calibrados, standby, solicitados, externas, emprestimos, janela });
+  graficos({ ativos: sobControle, descalibrados, proximos, calibrados, standby,
+             solicitados, externas });
   listas({ alvo, descalibrados, proximos, emprestimos, janela });
 
   const d = new Date();
@@ -97,8 +104,9 @@ function indicadores(d){
 
   el.innerHTML = `
     <button class="kpi c-total" data-ir="">
-      <div class="k">Acervo ativo</div><div class="v">${d.ativos.length}</div>
-      <div class="d">${d.instrumentos.length - d.ativos.length} inativo(s) fora da conta</div></button>
+      <div class="k">Sob controle</div><div class="v">${d.ativos.length}</div>
+      <div class="d">${d.referencias.length} referência(s) · ${
+        d.instrumentos.length - d.ativos.length - d.referencias.length} inativo(s) fora da conta</div></button>
     <button class="kpi c-descalibrado" data-ir="descalibrado">
       <div class="k">Descalibrados</div><div class="v">${d.descalibrados.length}</div>
       <div class="d">não podem ser emprestados</div></button>
@@ -215,7 +223,7 @@ function listas({ alvo, descalibrados, proximos, emprestimos, janela }){
   const maisUrgente = proximos.length ? proximos[0].dias_para_vencer : null;
 
   alvo.innerHTML = `
-    <div style="margin-bottom:16px">${legenda()}</div>
+    <div style="margin-bottom:16px">${legenda(ORDEM_STATUS_TMMDE)}</div>
 
     ${descalibrados.length
       ? cardLista({

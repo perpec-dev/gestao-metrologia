@@ -23,7 +23,16 @@ insert into public.config (chave, valor) values
   ('prazo_alerta_emprestimo_externo_dias', '7'),
 
   -- Motivos oferecidos ao inativar um instrumento no inventário.
-  ('motivos_inativacao', 'Sucateado,Vago,Não entregue,Danificado')
+  -- "Outros" fica por último de propósito: é a saída de emergência da
+  -- lista, e obriga o usuário a descrever a segregação na justificativa.
+  ('motivos_inativacao',
+   'Sucateado,Vago,Não entregue,Danificado,Não encontrado,Necessário manutenção,Outros'),
+
+  -- Controle mensal de vencimentos: 'sim' empurra a próxima calibração
+  -- para o ÚLTIMO DIA do mês de vencimento. Calibrado em 20/08/2025 com
+  -- periodicidade de 12 meses vence em 31/08/2026, não em 20/08/2026.
+  -- 'nao' volta ao vencimento no dia exato.
+  ('vencimento_fim_do_mes', 'sim')
 on conflict (chave) do nothing;
 
 -- ---------------------------------------------------------------------

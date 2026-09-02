@@ -25,14 +25,20 @@ export const STATUS = {
     ajuda:'Instrumento em laboratório externo.' },
   standby_pausado: {
     rotulo:'Standby (relógio parado)', cor:'#6A7480', fundo:'#F2F4F6',
-    ajuda:'Calibrado e guardado sem uso: a validade só começa a contar na primeira saída.' }
+    ajuda:'Calibrado e guardado sem uso: a validade só começa a contar na primeira saída.' },
+  referencia: {
+    rotulo:'Referência',               cor:'#1F7A8C', fundo:'#E9F4F6',
+    ajuda:'Padrão de aferição: cadastro de rastreabilidade, sem exigência de calibração periódica.' }
 };
 
 /** Ordem de leitura na interface: do mais urgente ao resolvido. */
 export const ORDEM_STATUS = [
   'descalibrado','proximo_vencimento','em_calibracao_externa',
-  'solicitado','standby_pausado','calibrado'
+  'solicitado','standby_pausado','calibrado','referencia'
 ];
+
+/** Situações que existem só para instrumento sob controle de calibração. */
+export const ORDEM_STATUS_TMMDE = ORDEM_STATUS.filter(s => s !== 'referencia');
 
 /* ---------------------------------------------------------------------
    Ordem dos segmentos em gráfico.
@@ -55,8 +61,11 @@ export const ORDEM_GRAFICO = [
   'descalibrado','em_calibracao_externa','proximo_vencimento','solicitado','calibrado'
 ];
 
-/** Status que permitem empréstimo (a trava definitiva está no banco). */
-export const PODE_EMPRESTAR = ['calibrado','standby_pausado'];
+/** Status que permitem empréstimo (a trava definitiva está no banco).
+    'referencia' entra porque o padrão de aferição não tem validade a
+    vencer — cobrar calibração em dia dele seria cobrar uma regra que a
+    própria classificação dispensa. */
+export const PODE_EMPRESTAR = ['calibrado','standby_pausado','referencia'];
 
 export const meta   = s => STATUS[s] || { rotulo: s || '—', cor:'#807C74', fundo:'#F1EFEB', ajuda:'' };
 export const rotulo = s => meta(s).rotulo;
@@ -85,6 +94,7 @@ export function legenda(statusList = ORDEM_STATUS){
 
 /** Texto curto para a coluna "vence em". */
 export function textoVencimento(inst){
+  if (inst.status_efetivo === 'referencia')      return 'não se aplica';
   if (inst.status_efetivo === 'standby_pausado') return 'sem contagem';
   const d = inst.dias_para_vencer;
   if (d == null) return '—';

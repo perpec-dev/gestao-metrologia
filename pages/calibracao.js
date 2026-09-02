@@ -11,7 +11,8 @@ import { listarInstrumentos, buscarInstrumento, listarFamilias, registrarCalibra
          definirStatusWorkflow, enviarArquivo, ouvir, abrirArquivo } from '../supabase.js';
 import { CONFIG } from '../config.js';
 import { criarTabela } from '../components/tabela.js';
-import { badge, classeLinha, legenda, textoVencimento, ORDEM_STATUS, STATUS } from '../components/status-badge.js';
+import { badge, classeLinha, legenda, rotulo, textoVencimento,
+         ORDEM_STATUS, ORDEM_STATUS_TMMDE, STATUS } from '../components/status-badge.js';
 import { abrirModal, fecharModal, confirmar } from '../components/modal.js';
 import { montarTimeline } from '../components/timeline.js';
 import { irPara } from '../router.js';
@@ -20,7 +21,7 @@ let desligarRealtime = null;
 let tabela = null;
 let dados = [];
 let familias = [];
-let filtros = { status:'', familia:'', texto:'', incluirInativos:false };
+let filtros = { status:'', familia:'', texto:'', incluirInativos:false, incluirReferencias:false };
 
 export function destroy(){
   if (desligarRealtime){ desligarRealtime(); desligarRealtime = null; }
@@ -52,12 +53,16 @@ export async function render(container, params = []){
         <input type="checkbox" id="fInativos" ${filtros.incluirInativos ? 'checked' : ''}>
         <label for="fInativos">Mostrar inativos</label>
       </div>
+      <div class="field field-inline" style="align-self:end;padding-bottom:9px">
+        <input type="checkbox" id="fReferencias" ${filtros.incluirReferencias ? 'checked' : ''}>
+        <label for="fReferencias" title="Padrões de aferição não têm calibração a vencer">Mostrar referências</label>
+      </div>
       <div class="field" style="align-self:end;padding-bottom:2px">
         <button class="btn btn-outline" id="btAtualizar">Atualizar</button>
       </div>
     </div>
 
-    <div style="margin-bottom:12px">${legenda()}</div>
+    <div style="margin-bottom:12px">${legenda(ORDEM_STATUS_TMMDE)}</div>
     <div id="listaCal">${htmlCarregando()}</div>`;
 
   familias = await listarFamilias();
@@ -72,14 +77,15 @@ export async function render(container, params = []){
       texto: container.querySelector('#fBusca').value,
       status: container.querySelector('#fStatus').value,
       familia: container.querySelector('#fFamilia').value,
-      incluirInativos: container.querySelector('#fInativos').checked
+      incluirInativos: container.querySelector('#fInativos').checked,
+      incluirReferencias: container.querySelector('#fReferencias').checked
     };
     lembrar('filtros.calibracao', filtros);
     if (tabela) tabela.atualizar(filtrar());
   };
 
   container.querySelector('#fBusca').addEventListener('input', debounce(aplicar, 200));
-  ['#fStatus','#fFamilia','#fInativos'].forEach(s =>
+  ['#fStatus','#fFamilia','#fInativos','#fReferencias'].forEach(s =>
     container.querySelector(s).addEventListener('change', aplicar));
   container.querySelector('#btAtualizar').addEventListener('click', () => carregar(container));
 
@@ -110,6 +116,10 @@ function filtrar(){
   const t = chave(filtros.texto);
   return dados.filter(i => {
     if (!filtros.incluirInativos && i.condicao_fisica === 'inativo') return false;
+    // Esta tela é a fila de trabalho da calibração. Padrão de referência
+    // não tem validade a vencer: fora dela por padrão, a um clique de voltar.
+    if (!filtros.incluirReferencias && i.tipo === 'REFERENCIA'
+        && filtros.status !== 'referencia') return false;
     if (filtros.status  && i.status_efetivo !== filtros.status) return false;
     if (filtros.familia && i.familia_id !== filtros.familia) return false;
     if (t){
@@ -171,7 +181,15 @@ export async function abrirDetalhe(id, container){
   try { i = await buscarInstrumento(id); }
   catch (e){ toast(msgErro(e), 'error'); return; }
 
-  const podeCalibrar = i.condicao_fisica === 'ativo';
+  /* Duas condições tiram o instrumento do fluxo de calibração, por
+     motivos diferentes:
+       · inativo — pode estar não encontrado, em manutenção ou na sucata.
+         Solicitar calibração dele não quer dizer nada.
+       · referência — padrão de aferição não tem validade a vencer.
+     Em ambos os casos os botões somem em vez de ficarem cinzas: botão
+     desabilitado ainda convida ao clique e ainda ocupa a leitura. */
+  const inativo    = i.condicao_fisica === 'inativo';
+  const referencia = i.tipo === 'REFERENCIA';
 
   abrirModal({
     titulo: `${i.tag} · ${i.descricao}`,
@@ -184,40 +202,64 @@ export async function abrirDetalhe(id, container){
         ${i.standby ? `<span class="bdg s-standby_pausado">Standby${i.data_inicio_relogio ? ' (relógio ligado)' : ' (relógio parado)'}</span>` : ''}
       </div>
 
-      ${i.condicao_fisica === 'inativo'
+      ${inativo
         ? `<div class="warn-box e"><b>Instrumento inativo.</b> ${esc(i.motivo_inativo || '')} — ${esc(i.justificativa_inativo || '')}</div>` : ''}
+      ${referencia
+        ? `<div class="warn-box i"><b>Padrão de aferição.</b> Instrumento de referência não tem
+             exigência de calibração periódica neste controle: ele não vence e não entra na fila
+             de trabalho da metrologia.</div>` : ''}
       ${i.standby && !i.data_inicio_relogio
         ? `<div class="warn-box i">Relógio de validade <b>parado</b>: a contagem começa na primeira saída deste instrumento.</div>` : ''}
 
       <div class="sec-title">Ficha</div>
       <div class="kv">
+        <div><div class="k">Classificação</div><div class="v">${referencia
+              ? 'Referência — padrão de aferição' : 'TMMDE — instrumento de uso'}</div></div>
         <div><div class="k">Família</div><div class="v">${esc(i.familia_codigo)} — ${esc(i.familia_nome)}</div></div>
-        <div><div class="k">Tipo</div><div class="v">${i.tipo === 'TMMDE' ? 'TMMDE (uso)' : 'Referência'}</div></div>
         <div><div class="k">Fabricante</div><div class="v">${esc(i.fabricante || '—')}</div></div>
-        <div><div class="k">Resolução / faixa</div><div class="v">${esc(i.resolucao || '—')}</div></div>
         <div><div class="k">Número de série</div><div class="v">${esc(i.num_serie || '—')}</div></div>
-        <div><div class="k">Entrada</div><div class="v">${esc(fmtData(i.data_entrada))}</div></div>
+        <div><div class="k">${referencia ? 'Cadastro' : 'Entrada'}</div><div class="v">${esc(fmtData(i.data_entrada))}</div></div>
+        ${referencia ? '' : `
+        <div><div class="k">Resolução / faixa</div><div class="v">${esc(i.resolucao || '—')}</div></div>
         <div><div class="k">Periodicidade</div><div class="v">${i.periodicidade_customizada
               ? 'Customizada por fases' : esc(i.periodicidade_meses) + ' meses'}</div></div>
         <div><div class="k">Localização normal</div><div class="v">${esc(i.localizacao_normal || '—')}</div></div>
         <div><div class="k">Última calibração</div><div class="v">${esc(fmtData(i.ultima_calibracao))}</div></div>
-        <div><div class="k">Próxima calibração</div><div class="v">${esc(fmtData(i.data_proxima))} · ${esc(textoVencimento(i))}</div></div>
+        <div><div class="k">Próxima calibração</div><div class="v">${esc(fmtData(i.data_proxima))} · ${esc(textoVencimento(i))}</div></div>`}
         <div><div class="k">Nota fiscal</div><div class="v">${esc(i.nota_fiscal || '—')}</div></div>
         <div><div class="k">Pedido de compra</div><div class="v">${esc(i.pedido_compra || '—')}</div></div>
+        ${i.pedido_calibracao ? `<div><div class="k">Pedido da calibração em curso</div>
+          <div class="v">${esc(i.pedido_calibracao)}</div></div>` : ''}
       </div>
+
+      ${i.observacoes ? `<div class="sec-title">Observações</div>
+        <p style="font-size:13.5px;line-height:1.6;color:var(--text2);white-space:pre-wrap">${esc(i.observacoes)}</p>` : ''}
 
       ${i.certificado_path ? `<div style="margin-top:12px">
         <button class="btn btn-outline btn-sm" id="btCert">Abrir último certificado</button></div>` : ''}
 
       <div class="sec-title">Situação de trabalho</div>
+      ${inativo ? `
+        <div class="warn-box w" style="margin-bottom:0">
+          Instrumento inativo não participa do fluxo de calibração — ele pode estar
+          não encontrado, em manutenção ou segregado. Para voltar a solicitar, enviar
+          ou calibrar, <b>reative-o no Inventário</b> primeiro.
+        </div>`
+      : referencia ? `
+        <div class="act-group">
+          <button class="btn btn-outline" id="btEmprestar">Registrar empréstimo</button>
+        </div>
+        <p style="font-size:12.5px;color:var(--muted);margin-top:8px">
+          As ações de calibração não se aplicam a padrão de referência.</p>`
+      : `
       <div class="act-group">
-        <button class="btn btn-green" id="btCalibrar" ${podeCalibrar ? '' : 'disabled'}>Tornar calibrado</button>
-        <button class="btn btn-outline" data-status="solicitado">Marcar como solicitado</button>
+        <button class="btn btn-green" id="btCalibrar">Tornar calibrado</button>
+        <button class="btn btn-outline" data-status="solicitado">Solicitar calibração</button>
         <button class="btn btn-outline" data-status="em_calibracao_externa">Enviar para calibração externa</button>
         <button class="btn btn-outline" data-status="descalibrado">Marcar como descalibrado</button>
         ${i.status_efetivo === 'calibrado' || i.status_efetivo === 'standby_pausado'
           ? `<button class="btn btn-outline" id="btEmprestar">Registrar empréstimo</button>` : ''}
-      </div>
+      </div>`}
 
       <div class="sec-title">Histórico completo</div>
       <div id="tlDetalhe"></div>`,
@@ -239,12 +281,22 @@ export async function abrirDetalhe(id, container){
 
       body.querySelectorAll('[data-status]').forEach(b => b.addEventListener('click', async () => {
         const novo = b.dataset.status;
-        const rotulo = { solicitado:'Calibração solicitada',
-                         em_calibracao_externa:'Em calibração externa',
-                         descalibrado:'Descalibrado' }[novo];
+
+        // Solicitar calibração é o momento em que o pedido de compra do
+        // serviço nasce — e por isso é aqui que ele é perguntado, não no
+        // fim, quando o serviço já acabou e ninguém lembra o número.
+        if (novo === 'solicitado'){ formSolicitarCalibracao(i, container); return; }
+
+        // Nome local, e não a função rotulo() importada: aqui o texto é
+        // do ato ("Enviar para calibração externa"), não do status.
+        const rotuloNovo = { em_calibracao_externa:'Em calibração externa',
+                             descalibrado:'Descalibrado' }[novo];
         if (!await confirmar({
           titulo:'Alterar situação',
-          texto:`Marcar <b>${esc(i.tag)}</b> como <b>${esc(rotulo)}</b>?`,
+          texto:`Marcar <b>${esc(i.tag)}</b> como <b>${esc(rotuloNovo)}</b>?` +
+                (novo === 'descalibrado' && i.pedido_calibracao
+                  ? `<br><br>O pedido <b>${esc(i.pedido_calibracao)}</b>, associado na solicitação,
+                     será desvinculado — voltar para descalibrado cancela a solicitação.` : ''),
           rotuloOk:'Alterar'
         })) return;
         try {
@@ -255,6 +307,68 @@ export async function abrirDetalhe(id, container){
         } catch (e){ toast(msgErro(e), 'error'); }
       }));
     }
+  });
+}
+
+/* ==================================================================== */
+/* SOLICITAR CALIBRAÇÃO                                                 */
+/*                                                                      */
+/* Aqui é onde o pedido de compra do serviço é associado. Antes ele era */
+/* pedido no fim, ao tornar calibrado: naquele momento o serviço já      */
+/* acabou, o número está num e-mail de duas semanas atrás e o campo      */
+/* passa em branco. Perguntado na solicitação, ele é a informação que a  */
+/* pessoa acabou de usar — e viaja guardado no instrumento até o         */
+/* certificado voltar.                                                  */
+/* ==================================================================== */
+function formSolicitarCalibracao(i, container){
+  abrirModal({
+    titulo: `Solicitar calibração — ${i.tag}`,
+    fecharFora: false,
+    corpo: `
+      <p style="font-size:14px;line-height:1.55;margin-bottom:14px">
+        <b>${esc(i.tag)}</b> — ${esc(i.descricao)}<br>
+        <span style="color:var(--muted);font-size:13px">
+          Passa de <b>${esc(rotulo(i.status_efetivo))}</b> para <b>Calibração solicitada</b>.</span>
+      </p>
+      <div class="field" id="wPedidoSol">
+        <label for="fPedidoSol">Pedido de compra da calibração</label>
+        <input type="text" id="fPedidoSol" placeholder="Ex.: PC-2026-0142"
+               value="${esc(i.pedido_calibracao || '')}">
+        <div class="hint">
+          Fica vinculado ao instrumento durante toda a solicitação e é gravado
+          no certificado quando a calibração for registrada. Pode ficar em branco
+          se o pedido ainda não tiver sido aberto.
+        </div>
+        <div class="msg" id="mPedidoSol"></div>
+      </div>
+      <div class="field" style="margin-top:12px">
+        <label for="fObsSol">Observação da solicitação</label>
+        <input type="text" id="fObsSol" placeholder="Laboratório escolhido, prazo combinado…">
+        <div class="hint">Opcional. Vai para a trilha de auditoria junto com a mudança.</div>
+      </div>`,
+    acoes: [
+      { rotulo:'Cancelar', classe:'btn-outline', onClick: f => f() },
+      { rotulo:'Registrar solicitação', classe:'btn-red', onClick: async (fechar, bt) => {
+          const pedido = document.getElementById('fPedidoSol').value.trim();
+          const obs    = document.getElementById('fObsSol').value.trim();
+
+          bt.disabled = true; bt.textContent = 'Salvando…';
+          try {
+            await definirStatusWorkflow(i.id, 'solicitado',
+              obs || (pedido ? 'Calibração solicitada — pedido ' + pedido : null),
+              pedido || null);
+            fechar();
+            toast(pedido
+              ? `Calibração de ${i.tag} solicitada · pedido ${pedido}.`
+              : `Calibração de ${i.tag} solicitada.`, 'success');
+            if (container) carregar(container, true);
+          } catch (e){
+            toast(msgErro(e), 'error');
+            bt.disabled = false; bt.textContent = 'Registrar solicitação';
+          }
+      } }
+    ],
+    aoAbrir: body => body.querySelector('#fPedidoSol').focus()
   });
 }
 
@@ -271,16 +385,17 @@ function formTornarCalibrado(i, container){
         ${i.periodicidade_customizada ? '(customizada por fases)' : `(${esc(i.periodicidade_meses)} meses)`}
         e o relógio de standby. Você não digita a próxima data.
       </div>
+      ${i.pedido_calibracao ? `
+      <div class="warn-box g">
+        Pedido de compra <b>${esc(i.pedido_calibracao)}</b>, associado quando esta calibração
+        foi solicitada, será gravado no registro automaticamente.
+      </div>` : ''}
       <div class="g2">
-        <div class="field" id="wDataCal">
+        <div class="field full" id="wDataCal">
           <label for="fDataCal">Data da calibração<span class="req">*</span></label>
           <input type="date" id="fDataCal" value="${hojeISO()}" max="${hojeISO()}">
+          <div class="hint">Com o controle mensal ligado, a validade vai até o último dia do mês de vencimento.</div>
           <div class="msg" id="mDataCal"></div>
-        </div>
-        <div class="field" id="wPedidos">
-          <label for="fPedidos">Pedidos associados</label>
-          <input type="text" id="fPedidos" placeholder="Ex.: PC-2026-0142">
-          <div class="msg" id="mPedidos"></div>
         </div>
 
         <div class="field" id="wCertificado">
@@ -324,13 +439,14 @@ function formTornarCalibrado(i, container){
             const certificado_path = fCert  ? await enviarArquivo(CONFIG.BUCKETS.certificados, fCert, pasta)  : null;
             const laudo_path       = fLaudo ? await enviarArquivo(CONFIG.BUCKETS.laudos,       fLaudo, pasta) : null;
 
+            // Sem pedido aqui de propósito: ele foi associado na
+            // solicitação e o servidor o copia da coluna do instrumento.
             await registrarCalibracao(i.id, {
               data_calibracao: data,
               certificado_path,
               laudo_path,
-              pedidos_associados: document.getElementById('fPedidos').value.trim(),
-              obs_metrologista:   document.getElementById('fObs').value.trim(),
-              standby_apos:       document.getElementById('fStandbyApos').checked
+              obs_metrologista: document.getElementById('fObs').value.trim(),
+              standby_apos:     document.getElementById('fStandbyApos').checked
             });
 
             fechar();

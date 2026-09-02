@@ -43,8 +43,13 @@ export const PADROES_CONFIG = {
   setores: 'Qualidade,Produção,Manutenção,Logística,Engenharia',
   prazo_alerta_emprestimo_casual_dias: '30',
   prazo_alerta_emprestimo_externo_dias: '7',
-  motivos_inativacao: 'Sucateado,Vago,Não entregue,Danificado'
+  motivos_inativacao:
+    'Sucateado,Vago,Não entregue,Danificado,Não encontrado,Necessário manutenção,Outros',
+  vencimento_fim_do_mes: 'sim'
 };
+
+/** Motivo que exige descrever a segregação do instrumento na justificativa. */
+export const MOTIVO_OUTROS = 'Outros';
 
 export async function carregarConfig(forcar = false){
   if (_config && !forcar) return _config;
@@ -70,6 +75,10 @@ export const cfg = (chaveCfg, padrao = null) => {
 export const cfgInt   = (chaveCfg, padrao = 0) => parseInt(cfg(chaveCfg, null), 10) || padrao;
 export const cfgLista = (chaveCfg)             => cfg(chaveCfg, null)
                                                     .split(',').map(s => s.trim()).filter(Boolean);
+/** Chave de configuração lida como sim/não — mesma leitura do cfg_bool do banco. */
+export const cfgBool  = (chaveCfg, padrao = false) =>
+  ['sim','s','true','1','yes'].includes(
+    String(cfg(chaveCfg, padrao ? 'sim' : 'nao')).trim().toLowerCase());
 
 /** upsert, não update: se a chave nunca foi semeada, UPDATE afeta zero
     linhas e "dá certo" sem gravar nada — o pior tipo de sucesso. */
@@ -138,6 +147,7 @@ export async function consultarInstrumentos(filtros = {}){
   if (filtros.status_efetivo?.length)  q = q.in('status_efetivo', filtros.status_efetivo);
   if (filtros.familia_id)              q = q.eq('familia_id', filtros.familia_id);
   if (filtros.condicao_fisica)         q = q.eq('condicao_fisica', filtros.condicao_fisica);
+  if (filtros.motivo_inativo)          q = q.eq('motivo_inativo', filtros.motivo_inativo);
   if (filtros.tipo)                    q = q.eq('tipo', filtros.tipo);
   if (filtros.proxima_de)              q = q.gte('data_proxima', filtros.proxima_de);
   if (filtros.proxima_ate)             q = q.lte('data_proxima', filtros.proxima_ate);
@@ -170,9 +180,16 @@ export async function importarInstrumentos(linhas){
 export const atualizarInstrumento = async (id, campos) =>
   ok(await sb.from('instrumentos').update(campos).eq('id', id).select().single());
 
-export const definirStatusWorkflow = async (id, status, justificativa = null) =>
+/**
+ * Situação de trabalho declarada pelo usuário.
+ * @param {string} pedido Pedido de compra associado. Só faz sentido em
+ *   'solicitado': é ali que a metrologia abre o pedido do serviço, e ele
+ *   viaja guardado no instrumento até a calibração ser registrada.
+ */
+export const definirStatusWorkflow = async (id, status, justificativa = null, pedido = null) =>
   ok(await sb.rpc('definir_status_workflow', {
-    p_instrumento_id: id, p_status: status, p_justificativa: justificativa
+    p_instrumento_id: id, p_status: status,
+    p_justificativa: justificativa, p_pedido: pedido
   }));
 
 export const inativarInstrumento = async (id, motivo, justificativa) =>
@@ -237,6 +254,22 @@ export const registrarDevolucao = async (movimentacaoId, obs, recebidoPor) =>
     p_obs: obs || null,
     p_recebido_por: recebidoPor || null
   }));
+
+/* ===================================================================
+   E-MAILS POR SETOR
+   Para onde a Metrologia escreve quando um empréstimo passa do prazo.
+   Todo mundo lê; só administrador grava (a trava está nas RPCs).
+   =================================================================== */
+export const listarEmailsSetor = async () =>
+  ok(await sb.from('setores_email').select('*').order('setor'));
+
+export const salvarEmailSetor = async (setor, email, responsavel = null) =>
+  ok(await sb.rpc('salvar_email_setor', {
+    p_setor: setor, p_email: email, p_responsavel: responsavel
+  }));
+
+export const removerEmailSetor = async setor =>
+  ok(await sb.rpc('remover_email_setor', { p_setor: setor }));
 
 /* ===================================================================
    LINHA DO TEMPO E DOCUMENTOS

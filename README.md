@@ -1,7 +1,7 @@
 # Gestão de Metrologia — Perpec Oilfield Supply
 
-Controle de calibração de instrumentos: recebimento, cadastro, calibração,
-empréstimo, inventário e relatórios.
+Controle de calibração de instrumentos: cadastro, calibração, empréstimo,
+inventário e relatórios.
 
 **Stack:** Supabase (Postgres + Auth + Storage + Realtime + RLS) e frontend em
 HTML/CSS/JS puro com ES Modules nativos. Sem Node, sem bundler, sem framework,
@@ -43,10 +43,19 @@ No **SQL Editor**, rode os arquivos **nesta ordem**, um de cada vez:
 | 4 | `sql/04_seed.sql` | Configurações obrigatórias e famílias iniciais |
 | 5 | `sql/05_admin.sql` | Gestão de perfis, apagamento em massa, receitas de manutenção |
 
-`sql/06_emprestimos_historico.sql` é **migração**, não instalação: serve para bancos
-que já estavam rodando antes do histórico de empréstimos existir. Numa instalação
-nova, os arquivos 01 e 03 já entregam tudo — pule o 06. Se o seu banco já estava
-de pé, rode nesta ordem: **06 → 02 → 03**.
+Os arquivos **06** e **07** são **migrações**, não instalação: numa instalação nova
+os arquivos 01 a 05 já entregam tudo, e você pode pular os dois.
+
+| Migração | Para quem | Ordem |
+|---|---|---|
+| `sql/06_emprestimos_historico.sql` | banco anterior ao histórico de empréstimos | **06 → 02 → 03** |
+| `sql/07_revisao.sql` | banco anterior à revisão descrita abaixo | **07 → 01 → 02 → 03** |
+
+`sql/07_revisao.sql` acrescenta o pedido de compra na solicitação da calibração,
+o cadastro enxuto de instrumento de referência, os motivos novos de inativação,
+o vencimento no último dia do mês e a relação de e-mails por setor. Ele só cria
+colunas, tabela e configurações — as funções e a view vêm de 01 e 03, que precisam
+rodar **depois**.
 
 **Confirme antes de avançar** para o frontend:
 
@@ -129,7 +138,7 @@ $txt   = 'window.LOGO_B64 = "data:image/png;base64,' + $b64 + '";'
 ├── utils.js                esc(), datas, toast, validação, CDNs
 ├── style.css               design system (tokens da Perpec)
 ├── /pages/                 uma tela por módulo: render(container) + destroy()
-│   ├── dashboard.js  recebimento.js  cadastro.js  calibracao.js
+│   ├── dashboard.js  cadastro.js  calibracao.js
 │   ├── emprestimo.js inventario.js   relatorios.js
 │   └── admin.js            usuários, parâmetros, manutenção, auditoria
 ├── /components/
@@ -138,9 +147,9 @@ $txt   = 'window.LOGO_B64 = "data:image/png;base64,' + $b64 + '";'
 │   ├── status-badge.js     situação e cor num só lugar
 │   ├── graficos.js         arco, barras e Pareto em SVG puro
 │   ├── timeline.js         linha do tempo do instrumento
-│   └── form-instrumento.js formulário compartilhado (recebimento + avulso)
+│   └── form-instrumento.js formulário de cadastro (documento de entrada opcional)
 ├── /sql/                   01_schema · 02_rls · 03_views · 04_seed · 05_admin
-│                           06_emprestimos_historico (migração)
+│                           06_emprestimos_historico · 07_revisao (migrações)
 └── logo.js                 logo em base64
 ```
 
@@ -166,13 +175,14 @@ mudando linha de instrumento à meia-noite.
 
 A ordem de decisão da view:
 
-1. `solicitado` ou `em_calibracao_externa` → vence tudo.
-2. `descalibrado` declarado → `descalibrado`.
-3. standby com `data_inicio_relogio` nulo → **`standby_pausado`**.
-4. sem `data_proxima` → `descalibrado`.
-5. `data_proxima` no passado → `descalibrado`.
-6. faltam ≤ `dias_proximo_vencimento` dias → `proximo_vencimento`.
-7. caso contrário → `calibrado`.
+1. classificação `REFERENCIA` → **`referencia`**, e para por aí.
+2. `solicitado` ou `em_calibracao_externa` → vence o resto.
+3. `descalibrado` declarado → `descalibrado`.
+4. standby com `data_inicio_relogio` nulo → **`standby_pausado`**.
+5. sem `data_proxima` → `descalibrado`.
+6. `data_proxima` no passado → `descalibrado`.
+7. faltam ≤ `dias_proximo_vencimento` dias → `proximo_vencimento`.
+8. caso contrário → `calibrado`.
 
 ### Semáforo
 
@@ -184,10 +194,38 @@ A ordem de decisão da view:
 | Calibração solicitada | azul | pedido feito, instrumento na empresa |
 | Em calibração externa | roxo | está no laboratório |
 | Standby (relógio parado) | cinza | calibrado e guardado; validade não corre |
+| Referência | teal | padrão de aferição, sem controle de validade |
 
 As cores estão em `style.css` como tokens `--status-*`, e os rótulos em
 `components/status-badge.js`. **Mudou ali, mudou em toda a aplicação** — tela,
 badge, tabela, painel, Excel e PDF.
+
+### Vencimento no último dia do mês
+
+O controle de vencimentos da metrologia é **mensal**, não diário. Com o parâmetro
+`vencimento_fim_do_mes` ligado (padrão), `calcular_data_proxima()` empurra a data
+para o último dia do mês em que ela cai:
+
+| Calibrado em | Periodicidade | Vencia em | Vence em |
+|---|---|---|---|
+| 20/08/2025 | 12 meses | 20/08/2026 | **31/08/2026** |
+| 31/01/2026 | 1 mês | 28/02/2026 | **28/02/2026** |
+| 15/03/2026 | 12 meses | 15/03/2027 | **31/03/2027** |
+
+O cálculo é `date_trunc('month', data) + 1 mês - 1 dia`, que acerta fevereiro e
+ano bissexto sozinho — somar 30 dias, não. Como a data gravada já é a real, a
+tela continua mostrando o dia: `31/08/2026` é verdade, não arredondamento.
+
+Desligue em **Administração → Parâmetros** para voltar ao vencimento no dia
+exato. Vale para as **próximas** calibrações registradas: as datas já calculadas
+não mudam sozinhas, do mesmo jeito que uma mudança de periodicidade não mexe no
+passado.
+
+Para alinhar o acervo que **já está no banco**, o item 6 de `sql/07_revisao.sql`
+tem o comando pronto, comentado, com uma consulta de conferência antes. Ele não
+roda sozinho de propósito: reescrever validade de calibração em massa é decisão
+da metrologia, não da migração. O ajuste só empurra a data para a frente, dentro
+do mesmo mês — nenhum instrumento passa a vencer mais cedo.
 
 ### Relógio de standby
 
@@ -232,6 +270,10 @@ Por isso nenhuma regra crítica depende da tela:
 | Auditoria é somente-inclusão | sem `GRANT` de UPDATE/DELETE, sem policy, e gatilhos que levantam exceção |
 | `data_proxima` não é escolhida pelo usuário | gatilho `calibracoes_data_proxima` sobrescreve sempre |
 | Tag não se repete | `gerar_tag()` deriva do maior sufixo existente, e `tag` é `UNIQUE` |
+| Instrumento inativo fica fora do fluxo de calibração | `definir_status_workflow()` e `registrar_calibracao()` recusam `condicao_fisica = 'inativo'` |
+| Pedido da calibração não é digitado no fim | `registrar_calibracao()` copia de `instrumentos.pedido_calibracao` e zera a coluna |
+| Referência não vence | `calcular_data_proxima()` devolve `NULL` para `tipo = 'REFERENCIA'` |
+| E-mail de setor só o administrador cadastra | `salvar_email_setor()` / `remover_email_setor()`; `setores_email` não tem policy de escrita |
 
 Se a tela deixar passar alguma coisa, o banco recusa e o erro chega ao usuário
 traduzido por `msgErro()` em `utils.js`.
@@ -244,17 +286,38 @@ traduzido por `msgErro()` em `utils.js`.
 vencem na janela configurada, e quais empréstimos passaram do prazo. Os números
 grandes são clicáveis e levam à lista já filtrada.
 
-**Recebimento.** Instrumento novo, com nota fiscal. A tag aparece assim que
-família e tipo são escolhidos, e é reconfirmada pelo servidor ao salvar — se o
-outro usuário cadastrar um instrumento da mesma família enquanto você digita, a
-sua tag avança sozinha. Instrumento + inspeção + primeira calibração entram numa
-única transação.
+**Cadastro.** A única porta de entrada do acervo, em quatro abas: novo
+instrumento, import de instrumentos por planilha, criação de famílias e import de
+famílias.
 
-**Cadastro.** Instrumento avulso (sem NF), import de instrumentos por planilha,
-criação de famílias e import de famílias. Os dois imports mostram prévia com as
-linhas problemáticas marcadas antes de gravar qualquer coisa. Há botão para
-baixar o modelo de planilha em cada aba — o de instrumentos vem com cinco linhas
-de exemplo, uma por caso de preenchimento.
+A aba **Novo instrumento** atende os dois casos que antes eram duas telas. O que
+separava "Recebimento" de "Cadastro avulso" era a documentação de entrada, que
+agora é um bloco **opcional**: preencheu nota fiscal ou pedido de compra, o
+instrumento é gravado com `origem = 'recebimento'`; deixou em branco, com
+`origem = 'avulso'`. Duas telas quase idênticas viravam dúvida sobre qual usar, e
+partiam o histórico do acervo em duas portas.
+
+A **classificação do instrumento**, no topo do formulário, decide o resto da tela:
+
+| Classificação | O que aparece |
+|---|---|
+| **TMMDE** — instrumento de uso | tudo: resolução, localização, standby, documento de entrada, inspeção visual e certificado |
+| **Referência** — padrão de aferição | só tag (que é a rastreabilidade), descrição, fabricante, número de série, data de cadastro e observações |
+
+Instrumento de referência **não tem exigência de calibração** neste controle: não
+vence, não fica descalibrado, não entra na fila de trabalho da metrologia e não
+aparece no painel. Ele pode ser emprestado e pode ser inativado, com motivo e
+justificativa, como qualquer outro. Os campos que só atendem TMMDE somem em vez
+de ficarem cinzas — campo desabilitado ainda ocupa a leitura de quem chega.
+
+A tag aparece assim que família e classificação são escolhidas, e é reconfirmada
+pelo servidor ao salvar: se o outro usuário cadastrar um instrumento da mesma
+família enquanto você digita, a sua tag avança sozinha. Instrumento + inspeção +
+primeira calibração entram numa única transação.
+
+Os dois imports mostram prévia com as linhas problemáticas marcadas antes de
+gravar qualquer coisa. Há botão para baixar o modelo de planilha em cada aba — o
+de instrumentos vem com cinco linhas de exemplo, uma por caso de preenchimento.
 
 ### Colunas da planilha de instrumentos
 
@@ -264,11 +327,13 @@ de exemplo, uma por caso de preenchimento.
 | `descricao` | sim | texto livre |
 | `familia` | não | nome da família — informativo, ou usado se o código não bater |
 | `fabricante`, `resolucao`, `num_serie`, `localizacao` | não | texto livre |
-| `tipo` | não | `TMMDE` ou `REFERENCIA` (padrão: o escolhido na tela) |
+| `classificacao` (ou `tipo`) | não | `TMMDE` ou `REFERENCIA` (padrão: o escolhido na tela) |
+| `observacoes` | não | texto livre |
+| `nota_fiscal`, `pedido_compra` | não | preenchidos, a linha entra como recebimento |
 | `data_entrada` | não | `AAAA-MM-DD` (padrão: o escolhido na tela) |
-| `standby` | não | `sim` / `não` |
-| `status` | não | `calibrado`, `descalibrado`, `solicitado`, `em calibracao externa` — **padrão `descalibrado`** |
-| `data_calibracao` | só se `status=calibrado` | `AAAA-MM-DD` |
+| `standby` | não | `sim` / `não` — ignorado em linhas de referência |
+| `status` | não | `calibrado`, `descalibrado`, `solicitado`, `em calibracao externa` — **padrão `descalibrado`**; ignorado em linhas de referência |
+| `data_calibracao` | só se `status=calibrado` | `AAAA-MM-DD` — ignorado em linhas de referência |
 | `situacao` | não | `ativo` / `inativo` — também aceita `sucateado`, `vago`, `não entregue`, `danificado`, que já viram o motivo. **Padrão `ativo`** |
 | `justificativa_inativo` | só se inativo | texto com 10+ caracteres |
 
@@ -281,15 +346,52 @@ periodicidade da família e pelo relógio de standby. Certificados em PDF també
 não vêm por planilha: são anexados depois, na tela de Calibração.
 
 **Calibração.** A lista de trabalho. Filtre por situação, família ou texto livre;
-clique num instrumento para abrir a ficha com o histórico completo. O botão
-**Tornar calibrado** pede data, certificado, pedidos, observações e laudo — a
-próxima data é calculada pelo servidor, nunca digitada. A tela é atualizada ao
-vivo: quando o outro usuário registra uma calibração, a linha pisca aqui.
+clique num instrumento para abrir a ficha com o histórico completo. A tela é
+atualizada ao vivo: quando o outro usuário registra uma calibração, a linha
+pisca aqui.
+
+O ciclo tem uma ordem, e o **pedido de compra entra no começo dele**:
+
+1. **Solicitar calibração** — pergunta o pedido de compra do serviço. É o momento
+   em que ele nasce; perguntá-lo no fim, quando o serviço já acabou e o número
+   está num e-mail de duas semanas atrás, é a receita para o campo passar em
+   branco. Fica guardado em `instrumentos.pedido_calibracao`.
+2. **Enviar para calibração externa** — mesmo pedido, o instrumento sai.
+3. **Tornar calibrado** — pede data, certificado, observações e laudo. O pedido
+   guardado é copiado para o certificado pelo servidor e zerado no instrumento:
+   ele não reaparece na próxima calibração. A próxima data é calculada pelo
+   servidor, nunca digitada.
+
+Voltar para **descalibrado** cancela a solicitação e desvincula o pedido — a tela
+avisa antes.
+
+Instrumento **inativo** não tem nenhum desses botões: ele pode estar não
+encontrado, em manutenção ou na sucata, e solicitar calibração dele não quer
+dizer nada. A trava não é só visual — `definir_status_workflow()` e
+`registrar_calibracao()` recusam instrumento inativo no banco. Reative no
+Inventário primeiro. Instrumento de **referência** também não tem esses botões,
+por outro motivo: ele não tem validade a vencer.
+
+Referências ficam fora desta lista por padrão, com um **Mostrar referências** ao
+lado do **Mostrar inativos** para trazê-las de volta.
 
 **Empréstimo.** Busque por tag ou descrição. Se o instrumento não puder sair, a
 tela diz o motivo antes de você preencher qualquer campo. Casual não pede termo;
 posse e externo não salvam sem ele. A aba **Em aberto** lista o que está fora e
 registra devolução — que exige informar **quem recebeu**, fechando o par da entrega.
+
+Quando um empréstimo passa do prazo de alerta, a aba **Em aberto** oferece
+**Notificar responsável**: abre no seu cliente de e-mail uma mensagem pronta para
+o setor — destinatário, tags, datas, dias fora e prazo já preenchidos — e você
+confere e envia. O botão **Notificar os setores responsáveis** faz o mesmo em
+lote, **um e-mail por setor**: cobrar cinco instrumentos em cinco mensagens é o
+jeito mais rápido de ninguém responder nenhuma.
+
+O e-mail sai do cliente da própria pessoa de propósito: chega assinado por quem
+cobra e a resposta volta para ela, não para uma caixa de sistema que ninguém lê.
+Os destinatários vêm de **Administração → E-mails por setor**; sem e-mail
+cadastrado o botão fica desabilitado e diz por quê. Metrologista também notifica;
+cadastrar e alterar é do administrador.
 
 A aba **Histórico** guarda todas as saídas e devoluções já registradas, com filtro
 por período, tipo, situação (devolvidos, em aberto, fora do prazo) e busca livre.
@@ -298,12 +400,28 @@ Nada é apagado quando o instrumento volta: a devolução preenche a mesma linha
 saída, então o par entrega/devolução é sempre íntegro. Devolução só acontece pela
 RPC `registrar_devolucao` — não há `UPDATE` direto em `movimentacoes` pela API.
 
-**Inventário.** O acervo inteiro, com condição física. Inativar abre um modal com
-motivo e justificativa obrigatórios — os dois vão para a auditoria.
+**Inventário.** O acervo inteiro, com condição física e classificação. Filtre por
+TMMDE ou Referência; o KPI **Referências** leva direto ao recorte. Inativar abre um
+modal com motivo e justificativa obrigatórios — os dois vão para a auditoria.
+
+Os motivos vêm do parâmetro `motivos_inativacao` e saem de fábrica assim:
+sucateado, vago, não entregue, danificado, **não encontrado**, **necessário
+manutenção** e **outros**. "Outros" é a saída de emergência da lista e tem
+tratamento próprio: escolhê-lo abre um campo obrigatório de **descrição da
+segregação** — onde o instrumento foi parar e como está identificado — que entra
+na justificativa gravada na auditoria, prefixada por `Segregação:`.
+
+Instrumento de referência é inativado pelo mesmo caminho, com os mesmos campos.
 
 **Relatórios.** Filtros aplicados no servidor, prévia na tela, exportação para
 Excel e para PDF. Há atalhos para os recortes mais pedidos (vencidos hoje,
 vencem no mês, vencem no trimestre).
+
+Escolher **Inativos** na condição física libera o filtro de **motivo da
+inativação**, para tirar só os não encontrados, ou só os que aguardam manutenção.
+Nesse recorte a prévia e as exportações ganham as colunas **motivo** e
+**justificativa** — um relatório de inativos sem o motivo é uma lista de tags sem
+resposta —, e no PDF elas tomam o lugar da localização.
 
 ---
 
@@ -321,7 +439,9 @@ sem ganho numa equipe de metrologia.
 | Alterar periodicidade (com justificativa) | sim | sim |
 | Inativar / reativar instrumento | **não** | sim |
 | **Apagar** instrumentos | **não** | sim |
+| Notificar setor sobre devolução em atraso | sim | sim |
 | Alterar parâmetros do sistema | **não** | sim |
+| Cadastrar e-mails por setor | **não** | sim |
 | Gerenciar papéis e acessos | **não** | sim |
 
 ### Pela tela — `Administração → Usuários`

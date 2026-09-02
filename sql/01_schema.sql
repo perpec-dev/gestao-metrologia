@@ -75,6 +75,37 @@ returns int language sql stable security definer set search_path = public as $$
   select coalesce((select valor::int from public.config where chave = p_chave), p_padrao)
 $$;
 
+-- Mesma coisa para chave de texto. Valor em branco conta como ausente:
+-- um campo esvaziado por engano na tela não pode virar regra de negócio.
+create or replace function public.cfg_txt(p_chave text, p_padrao text)
+returns text language sql stable security definer set search_path = public as $$
+  select coalesce(nullif(btrim((select valor from public.config where chave = p_chave)), ''), p_padrao)
+$$;
+
+-- Chave de configuração lida como sim/não.
+create or replace function public.cfg_bool(p_chave text, p_padrao boolean)
+returns boolean language sql stable security definer set search_path = public as $$
+  select lower(public.cfg_txt(p_chave, case when p_padrao then 'sim' else 'nao' end))
+         in ('sim','s','true','1','yes')
+$$;
+
+-- ---------------------------------------------------------------------
+-- 2b. E-MAIL DO RESPONSÁVEL POR SETOR
+--     Quem cobra a devolução de um instrumento emprestado não é o
+--     sistema: é o responsável pelo setor. Isto guarda para onde
+--     escrever. Só administrador grava (RPC salvar_email_setor);
+--     todo mundo lê, porque o botão de notificar também é do
+--     metrologista.
+-- ---------------------------------------------------------------------
+create table if not exists public.setores_email (
+  setor                text primary key,
+  email                text not null
+                       check (email ~* '^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$'),
+  responsavel          text,
+  atualizado_em        timestamptz not null default now(),
+  atualizado_por_email text
+);
+
 -- ---------------------------------------------------------------------
 -- 3. FAMÍLIAS E PERIODICIDADE
 -- ---------------------------------------------------------------------
@@ -108,19 +139,30 @@ create table if not exists public.instrumentos (
   id                     uuid primary key default gen_random_uuid(),
   tag                    text not null unique,
   familia_id             uuid not null references public.familias(id) on delete restrict,
+  -- Classificação do instrumento. TMMDE é medição de uso, com todo o
+  -- controle de validade. REFERENCIA é padrão de aferição: cadastro
+  -- enxuto, sem exigência de calibração periódica.
   tipo                   text not null check (tipo in ('TMMDE','REFERENCIA')),
   fabricante             text,
   descricao              text not null check (char_length(btrim(descricao)) >= 2),
   resolucao              text,
   num_serie              text,
+  observacoes            text,      -- campo livre; o principal da referência
   nota_fiscal            text,
   pedido_compra          text,
+  -- Pedido associado na SOLICITAÇÃO da calibração. Copiado para a
+  -- calibração e zerado quando ela é registrada.
+  pedido_calibracao      text,
   data_entrada           date not null,
   standby                boolean not null default false,
   -- 1ª movimentação pós-standby. NULL + standby = relógio de validade pausado.
   data_inicio_relogio    timestamptz,
   condicao_fisica        text not null default 'ativo' check (condicao_fisica in ('ativo','inativo')),
-  motivo_inativo         text,      -- sucateado / vago / nao_entregue / danificado
+  -- Texto livre alimentado por config.motivos_inativacao: sucateado,
+  -- vago, não entregue, danificado, não encontrado, necessário
+  -- manutenção, outros. Lista aberta de propósito — a metrologia
+  -- acrescenta o que a realidade dela pedir, sem migração de banco.
+  motivo_inativo         text,
   justificativa_inativo  text,
   localizacao_normal     text,
   status_workflow        text not null default 'descalibrado'
@@ -282,12 +324,16 @@ end $$;
 -- ---------------------------------------------------------------------
 -- 11. MOTOR DE PRÓXIMA CALIBRAÇÃO
 --     Regras:
+--       · classificação REFERENCIA -> NULL (padrão de aferição não tem
+--         exigência de calibração periódica neste controle)
 --       · standby com relógio pausado (data_inicio_relogio NULL) -> NULL
 --         (validade indefinida enquanto o instrumento não for usado)
 --       · base = maior entre data_calibracao e data_inicio_relogio
 --       · família simples      -> base + periodicidade_meses
 --       · família customizada  -> fase vigente conforme a IDADE do
 --         instrumento na âncora da fase (entrada ou 1ª calibração)
+--       · por fim, se 'vencimento_fim_do_mes' estiver ligado, a data
+--         é empurrada para o último dia do mês de vencimento
 -- ---------------------------------------------------------------------
 create or replace function public.calcular_data_proxima(
   p_instrumento_id uuid,
@@ -302,11 +348,17 @@ declare
   v_ancora_data date;
   v_idade       int;
   v_intervalo   int;
+  v_proxima     date;
   r             record;
 begin
   select * into i from public.instrumentos where id = p_instrumento_id;
   if not found then raise exception 'Instrumento não encontrado.'; end if;
   select * into f from public.familias where id = i.familia_id;
+
+  -- Padrão de referência: sem controle de validade. Guardar uma data de
+  -- vencimento aqui faria a view classificá-lo como descalibrado e ele
+  -- entraria na fila de trabalho da metrologia sem precisar.
+  if i.tipo = 'REFERENCIA' then return null; end if;
 
   -- Relógio pausado: a calibração não expira enquanto o instrumento
   -- estiver guardado sem uso.
@@ -324,38 +376,49 @@ begin
     v_base := i.data_inicio_relogio::date;
   end if;
 
-  if not f.periodicidade_customizada then
-    return v_base + (f.periodicidade_meses || ' months')::interval;
-  end if;
+  if f.periodicidade_customizada then
+    select ancora into v_ancora_tipo
+      from public.periodicidade_fases
+     where familia_id = f.id order by ordem limit 1;
+    v_ancora_tipo := coalesce(v_ancora_tipo, 'entrada');
 
-  select ancora into v_ancora_tipo
-    from public.periodicidade_fases
-   where familia_id = f.id order by ordem limit 1;
-  v_ancora_tipo := coalesce(v_ancora_tipo, 'entrada');
-
-  if v_ancora_tipo = 'primeira_calibracao' then
-    select min(data_calibracao) into v_ancora_data
-      from public.calibracoes where instrumento_id = i.id;
-    v_ancora_data := coalesce(v_ancora_data, p_data_calibracao);
-  else
-    v_ancora_data := i.data_entrada;
-  end if;
-
-  v_idade := (extract(year  from age(v_base, v_ancora_data)) * 12
-            + extract(month from age(v_base, v_ancora_data)))::int;
-
-  for r in
-    select * from public.periodicidade_fases where familia_id = f.id order by ordem
-  loop
-    if r.vigencia_ate_meses is null or v_idade < r.vigencia_ate_meses then
-      v_intervalo := r.intervalo_meses;
-      exit;
+    if v_ancora_tipo = 'primeira_calibracao' then
+      select min(data_calibracao) into v_ancora_data
+        from public.calibracoes where instrumento_id = i.id;
+      v_ancora_data := coalesce(v_ancora_data, p_data_calibracao);
+    else
+      v_ancora_data := i.data_entrada;
     end if;
-    v_intervalo := r.intervalo_meses;   -- guarda a última como fallback
-  end loop;
+
+    v_idade := (extract(year  from age(v_base, v_ancora_data)) * 12
+              + extract(month from age(v_base, v_ancora_data)))::int;
+
+    for r in
+      select * from public.periodicidade_fases where familia_id = f.id order by ordem
+    loop
+      if r.vigencia_ate_meses is null or v_idade < r.vigencia_ate_meses then
+        v_intervalo := r.intervalo_meses;
+        exit;
+      end if;
+      v_intervalo := r.intervalo_meses;   -- guarda a última como fallback
+    end loop;
+  end if;
 
   v_intervalo := coalesce(v_intervalo, f.periodicidade_meses);
-  return v_base + (v_intervalo || ' months')::interval;
+  v_proxima   := (v_base + (v_intervalo || ' months')::interval)::date;
+
+  -- Controle mensal de vencimentos: a metrologia fecha o mês, não o dia.
+  -- Calibrado em 20/08/2025 com periodicidade de 12 meses vence em
+  -- 31/08/2026, e não em 20/08/2026 — o instrumento continua válido
+  -- até o fim do mês em que a calibração cai.
+  --
+  -- date_trunc + 1 mês - 1 dia acerta fevereiro e ano bissexto sozinho;
+  -- somar 30 dias, não.
+  if public.cfg_bool('vencimento_fim_do_mes', true) then
+    v_proxima := (date_trunc('month', v_proxima) + interval '1 month' - interval '1 day')::date;
+  end if;
+
+  return v_proxima;
 end $$;
 
 -- Gatilho: data_proxima nunca é escolhida pelo cliente.
@@ -512,18 +575,21 @@ begin
 
   insert into public.instrumentos (
     tag, familia_id, tipo, fabricante, descricao, resolucao, num_serie,
-    nota_fiscal, pedido_compra, data_entrada, standby, localizacao_normal, origem,
-    status_workflow
+    observacoes, nota_fiscal, pedido_compra, data_entrada, standby,
+    localizacao_normal, origem, status_workflow
   ) values (
     v_tag, v_fam, v_tipo,
     nullif(btrim(coalesce(p_instrumento->>'fabricante','')),''),
     p_instrumento->>'descricao',
     nullif(btrim(coalesce(p_instrumento->>'resolucao','')),''),
     nullif(btrim(coalesce(p_instrumento->>'num_serie','')),''),
+    nullif(btrim(coalesce(p_instrumento->>'observacoes','')),''),
     nullif(btrim(coalesce(p_instrumento->>'nota_fiscal','')),''),
     nullif(btrim(coalesce(p_instrumento->>'pedido_compra','')),''),
     (p_instrumento->>'data_entrada')::date,
-    coalesce((p_instrumento->>'standby')::boolean, false),
+    -- Standby é mecânica de validade de calibração: não existe para
+    -- padrão de referência, mesmo que a tela mande true por engano.
+    (v_tipo = 'TMMDE' and coalesce((p_instrumento->>'standby')::boolean, false)),
     nullif(btrim(coalesce(p_instrumento->>'localizacao_normal','')),''),
     coalesce(p_instrumento->>'origem','avulso'),
     'descalibrado'
@@ -563,9 +629,30 @@ create or replace function public.registrar_calibracao(
   p_dados jsonb
 ) returns public.calibracoes
 language plpgsql security definer set search_path = public as $$
-declare v_row public.calibracoes%rowtype;
+declare
+  v_row    public.calibracoes%rowtype;
+  v_cond   text;
+  v_tag    text;
+  v_pedido text;
 begin
   if not public.sou_ativo() then raise exception 'Usuário sem permissão.'; end if;
+
+  select condicao_fisica, tag, nullif(btrim(coalesce(pedido_calibracao,'')),'')
+    into v_cond, v_tag, v_pedido
+    from public.instrumentos where id = p_instrumento_id;
+  if v_cond is null then raise exception 'Instrumento não encontrado.'; end if;
+
+  -- Instrumento inativo está fora do fluxo: não encontrado, em
+  -- manutenção, sucateado. Calibrar um deles seria registrar um serviço
+  -- em cima de um instrumento que a metrologia declarou indisponível.
+  if v_cond = 'inativo' then
+    raise exception 'O instrumento % está inativo. Reative-o no Inventário antes de registrar a calibração.', v_tag;
+  end if;
+
+  -- O pedido de compra é perguntado na SOLICITAÇÃO da calibração e
+  -- guardado no instrumento até aqui. Ele é a fonte da verdade; o que
+  -- veio da tela só entra quando não houve solicitação registrada.
+  v_pedido := coalesce(v_pedido, nullif(btrim(coalesce(p_dados->>'pedidos_associados','')),''));
 
   insert into public.calibracoes (
     instrumento_id, data_calibracao, certificado_path, pedidos_associados,
@@ -573,11 +660,16 @@ begin
   ) values (
     p_instrumento_id, (p_dados->>'data_calibracao')::date,
     nullif(btrim(coalesce(p_dados->>'certificado_path','')),''),
-    nullif(btrim(coalesce(p_dados->>'pedidos_associados','')),''),
+    v_pedido,
     nullif(btrim(coalesce(p_dados->>'obs_metrologista','')),''),
     nullif(btrim(coalesce(p_dados->>'laudo_path','')),''),
     coalesce((p_dados->>'standby_apos')::boolean, false)
   ) returning * into v_row;
+
+  -- Ciclo fechado: o pedido acompanhou a solicitação até o certificado
+  -- e não deve reaparecer na próxima calibração deste instrumento.
+  update public.instrumentos set pedido_calibracao = null
+   where id = p_instrumento_id and pedido_calibracao is not null;
 
   return v_row;
 end $$;
@@ -663,16 +755,80 @@ begin
 end $$;
 
 -- 13.5 Mudar status de workflow (solicitado / em calibração externa / descalibrado)
+--
+-- A assinatura ganhou p_pedido. Duas versões coexistindo deixariam o
+-- PostgREST com chamada ambígua, por isso a antiga sai antes.
+drop function if exists public.definir_status_workflow(uuid, text, text);
+
 create or replace function public.definir_status_workflow(
   p_instrumento_id uuid,
   p_status text,
-  p_justificativa text default null
+  p_justificativa text default null,
+  p_pedido text default null
 ) returns void language plpgsql security definer set search_path = public as $$
+declare v_cond text; v_tag text;
 begin
   if not public.sou_ativo() then raise exception 'Usuário sem permissão.'; end if;
   if p_status not in ('calibrado','descalibrado','solicitado','em_calibracao_externa') then
     raise exception 'Status inválido: %', p_status;
   end if;
+
+  select condicao_fisica, tag into v_cond, v_tag
+    from public.instrumentos where id = p_instrumento_id;
+  if v_cond is null then raise exception 'Instrumento não encontrado.'; end if;
+
+  -- Instrumento inativado pode estar não encontrado, em manutenção ou
+  -- na sucata. Solicitar calibração dele não quer dizer nada — a tela
+  -- esconde os botões, e aqui a trava é de verdade.
+  if v_cond = 'inativo' then
+    raise exception 'O instrumento % está inativo. Reative-o no Inventário antes de mudar a situação de calibração.', v_tag;
+  end if;
+
   perform set_config('app.justificativa', coalesce(p_justificativa,''), true);
-  update public.instrumentos set status_workflow = p_status where id = p_instrumento_id;
+
+  update public.instrumentos
+     set status_workflow   = p_status,
+         -- O pedido de compra entra na SOLICITAÇÃO e sai quando o
+         -- instrumento volta para descalibrado (solicitação abortada).
+         -- Enviar para o laboratório não mexe: é o mesmo pedido.
+         pedido_calibracao = case
+           when p_status = 'solicitado'
+             then coalesce(nullif(btrim(coalesce(p_pedido,'')),''), pedido_calibracao)
+           when p_status = 'descalibrado' then null
+           else pedido_calibracao
+         end
+   where id = p_instrumento_id;
+end $$;
+
+-- 13.6 E-mail do responsável pelo setor (cobrança de devolução)
+create or replace function public.salvar_email_setor(
+  p_setor text,
+  p_email text,
+  p_responsavel text default null
+) returns void language plpgsql security definer set search_path = public as $$
+begin
+  if not public.sou_admin() then
+    raise exception 'Somente administradores podem cadastrar e-mails de setor.';
+  end if;
+  if coalesce(btrim(p_setor),'') = '' then
+    raise exception 'Informe o setor.';
+  end if;
+
+  insert into public.setores_email (setor, email, responsavel, atualizado_por_email)
+  values (btrim(p_setor), lower(btrim(p_email)),
+          nullif(btrim(coalesce(p_responsavel,'')),''), public.meu_email())
+  on conflict (setor) do update
+    set email                = excluded.email,
+        responsavel          = excluded.responsavel,
+        atualizado_em        = now(),
+        atualizado_por_email = excluded.atualizado_por_email;
+end $$;
+
+create or replace function public.remover_email_setor(p_setor text)
+returns void language plpgsql security definer set search_path = public as $$
+begin
+  if not public.sou_admin() then
+    raise exception 'Somente administradores podem remover e-mails de setor.';
+  end if;
+  delete from public.setores_email where setor = btrim(p_setor);
 end $$;
