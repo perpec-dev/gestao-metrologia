@@ -446,9 +446,37 @@ details.card[open] .chevron svg{transform:rotate(180deg);stroke:var(--red)}
 /* =====================================================================
    GRÁFICOS
    ===================================================================== */
-.graficos{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:16px;margin-bottom:1.5rem}
-.graficos .card{margin-bottom:0}
-.grafico{position:relative}
+/* ---------------------------------------------------------------------
+   GRADE DOS GRÁFICOS — quatro cartas, sempre em linha cheia.
+
+   Com `auto-fit`, a largura da janela decidia quantas colunas cabiam: em
+   1344px davam três, e a quarta carta caía sozinha numa segunda linha,
+   deixando dois vãos vazios do tamanho de um gráfico. Aqui a contagem é
+   declarada, e só em números que DIVIDEM quatro — 2 ou 1. Nunca três:
+   linha quebrada não acontece por acidente de viewport.
+
+   Duas colunas, e não quatro, porque o texto do SVG escala junto com o
+   desenho: em quatro colunas o rótulo de eixo cairia para ~8px. Em 2×2
+   cada gráfico é lido confortavelmente, e as quatro cartas fecham duas
+   linhas cheias.
+
+   `grid-auto-rows:1fr` iguala as alturas das linhas, e o cartão em
+   coluna flex com a tabela-gêmea empurrada para baixo (`margin-top:auto`)
+   alinha o rodapé de todas as cartas. É o que faz quatro conteúdos de
+   tamanhos diferentes parecerem do mesmo tamanho.
+   --------------------------------------------------------------------- */
+.graficos{display:grid;grid-template-columns:1fr;grid-auto-rows:1fr;gap:16px;margin-bottom:1.5rem}
+@media(min-width:820px){.graficos{grid-template-columns:repeat(2,1fr)}}
+.graficos .card{margin-bottom:0;display:flex;flex-direction:column}
+.graficos .card-body{flex:1;display:flex;flex-direction:column}
+/* O texto do SVG escala junto com o viewBox: sem teto de largura, uma
+   carta de 660px renderiza o número do centro do anel em 68px. O teto
+   vale para o BLOCO inteiro — desenho, legenda e tabela-gêmea — e não só
+   para o SVG: capar apenas o desenho deixaria a legenda com o rótulo à
+   esquerda e o número a 600px de distância, dois elementos que precisam
+   ser lidos no mesmo movimento dos olhos. */
+.grafico{position:relative;display:flex;flex-direction:column;flex:1;
+         width:100%;max-width:470px;margin-left:auto;margin-right:auto}
 .grafico svg{display:block;width:100%;height:auto;overflow:visible}
 .g-sub{font-size:11.5px;color:var(--muted);line-height:1.45}
 .g-eixo{font-size:10.5px;fill:var(--muted);font-variant-numeric:tabular-nums}
@@ -493,8 +521,11 @@ details.card[open] .chevron svg{transform:rotate(180deg);stroke:var(--red)}
 .g-dica.on{opacity:1;transform:translate(-50%,-135%) scale(1)}
 .g-dica .l2{font-weight:500;color:#C9BCB9;display:block}
 
-/* Tabela-gêmea: todo valor é legível sem depender de cor. */
-.g-tabela{margin-top:12px;border-top:1px solid var(--hair);padding-top:10px}
+/* Tabela-gêmea: todo valor é legível sem depender de cor.
+   `margin-top:auto` a mantém colada no rodapé do cartão — é ela que
+   alinha a base das quatro cartas quando o conteúdo tem alturas
+   diferentes. */
+.g-tabela{margin-top:auto;padding-top:10px;border-top:1px solid var(--hair)}
 .g-tabela summary{font-size:11.5px;font-weight:650;color:var(--muted);cursor:pointer;list-style:none;
                   transition:color .14s}
 .g-tabela summary:hover{color:var(--red)}
