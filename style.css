@@ -216,18 +216,13 @@ a:hover{text-decoration:underline}
 .pane.on{display:block;animation:aparece .22s var(--saida)}
 
 /* Seletor de visualização DENTRO de um painel (ex.: Empréstimo › Em
-   aberto, por tipo). É o mesmo controle segmentado das subabas, mas
-   carrega contagem: o número de cada tipo fica à vista mesmo quando não
-   é o tipo escolhido — senão, filtrar viraria esconder. */
+   aberto, por tipo). Mesmo controle segmentado das subabas; o filete
+   vermelho embaixo do escolhido é o que o distingue da navegação de
+   verdade, que fica acima dele. */
 .subtabs-filtro{margin-bottom:1rem}
-.subtab .n{display:inline-block;margin-left:5px;font-size:11px;font-weight:800;
-           font-variant-numeric:tabular-nums;color:var(--muted);background:var(--surface3);
-           border-radius:99px;padding:1px 7px;min-width:20px;text-align:center;
-           transition:color .16s,background .16s}
-.subtab.sel .n{color:#fff;background:var(--dark)}
-.subtab:disabled{opacity:.45;cursor:not-allowed}
-.subtab:disabled:hover{color:var(--muted)}
 .subtabs-filtro .subtab.sel{box-shadow:var(--sh-1),inset 0 -2px 0 var(--red)}
+.subtab:disabled{opacity:.42;cursor:not-allowed}
+.subtab:disabled:hover{color:var(--muted);background:none}
 
 /* =====================================================================
    CARTÕES
