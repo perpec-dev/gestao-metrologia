@@ -152,7 +152,7 @@ function indicadores(d){
       <div class="k">Vencendo</div><div class="v">${d.proximos.length}</div>
       <div class="d">${esc(d.alerta)}</div></button>
     <button class="kpi c-externa" data-ir="em_calibracao_externa">
-      <div class="k">Em laboratório</div><div class="v">${d.externas.length + d.solicitados.length}</div>
+      <div class="k">Processo de calibração</div><div class="v">${d.externas.length + d.solicitados.length}</div>
       <div class="d">${d.solicitados.length} solicitada(s), ${d.externas.length} enviada(s)</div></button>
     <div class="kpi c-solicitado estatico">
       <div class="k">Emprestados</div><div class="v">${d.emprestimos.length}</div>
