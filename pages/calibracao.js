@@ -20,7 +20,8 @@ import { badge, classeLinha, legenda, rotulo, textoVencimento,
          ORDEM_STATUS_TMMDE, STATUS } from '../components/status-badge.js';
 import { abrirModal, fecharModal, confirmar } from '../components/modal.js';
 import { montarTimeline } from '../components/timeline.js';
-import { montarArquivosInstrumento } from '../components/arquivos.js';
+import { montarArquivosInstrumento, htmlBotaoFoto,
+         ligarAnexoFoto } from '../components/arquivos.js';
 import { irPara } from '../router.js';
 
 let desligarRealtime = null;
@@ -269,14 +270,32 @@ export async function abrirDetalhe(id, container){
       </div>`}
 
       <div class="sec-title">Arquivos do instrumento</div>
+      <!-- Anexar foto vive aqui, e não no cadastro: o instrumento que
+           entrou por importação em massa nunca passou pela tela de
+           cadastro. Recadastrá-lo só para pôr uma foto trocaria a tag e
+           jogaria fora o histórico. -->
+      <div class="arq-acoes">${htmlBotaoFoto(i)}</div>
       <div id="arqDetalhe"></div>
 
       <div class="sec-title">Histórico completo</div>
       <div id="tlDetalhe"></div>`,
     acoes: [{ rotulo:'Fechar', classe:'btn-outline', onClick: f => f() }],
     aoAbrir: (body) => {
-      montarArquivosInstrumento(body.querySelector('#arqDetalhe'), i.id);
+      /* O modal é um elemento só: remover um arquivo abre o modal de
+         remoção POR CIMA da ficha, e fechá-lo deixaria a tela vazia. A
+         ficha é reaberta inteira, já com a pasta e o histórico
+         atualizados — e o histórico é onde a remoção acabou de entrar. */
+      const repintarFicha = () => {
+        abrirDetalhe(i.id, container);
+        if (container) carregar(container, true);
+      };
+      montarArquivosInstrumento(body.querySelector('#arqDetalhe'), i.id, repintarFicha);
       montarTimeline(body.querySelector('#tlDetalhe'), i.id);
+
+      // Mesma razão da remoção: o modal é um elemento só, e o de anexar
+      // foto abre por cima da ficha. Concluído, a ficha volta inteira —
+      // com a pasta e o histórico já mostrando a foto nova.
+      ligarAnexoFoto(body, repintarFicha);
 
       const btCert = body.querySelector('#btCert');
       if (btCert) btCert.addEventListener('click', async () => {

@@ -320,6 +320,62 @@ export const listarArquivosInstrumento = async instrumentoId =>
   ok(await sb.from('vw_arquivos').select('*')
        .eq('instrumento_id', instrumentoId).order('quando', { ascending:false }));
 
+/**
+ * Remove (ou substitui) um arquivo da pasta do instrumento.
+ *
+ * A ORDEM importa e não é intercambiável: primeiro o banco, depois o
+ * Storage. Se o Storage fosse apagado antes e a RPC falhasse, a tela
+ * ficaria com um botão "Abrir" apontando para um arquivo que não existe
+ * mais — erro que só aparece no clique de quem precisa do documento. Na
+ * ordem inversa o pior caso é um arquivo órfão no bucket, invisível na
+ * tela e recolhível pela consulta do item 4.7 de 05_admin.sql.
+ *
+ * @param {{origem:string, registroId:string, justificativa:string,
+ *          bucket:string, caminho:string, substituto?:string|null}} dados
+ * @returns {Promise<{instrumentoId:string, orfao:boolean}>}
+ */
+export async function removerArquivo(dados){
+  const instrumentoId = ok(await sb.rpc('remover_arquivo', {
+    p_origem:        dados.origem,
+    p_registro_id:   dados.registroId,
+    p_justificativa: dados.justificativa,
+    p_substituto:    dados.substituto || null
+  }));
+
+  let orfao = false;
+  try {
+    const { error } = await sb.storage.from(dados.bucket).remove([dados.caminho]);
+    if (error) throw error;
+  } catch (e){
+    orfao = true;
+    console.warn('[metrologia] referência removida do banco, mas o arquivo continua no Storage:',
+                 dados.bucket, dados.caminho, e);
+  }
+  return { instrumentoId, orfao };
+}
+
+/**
+ * Anexa uma foto a um instrumento JÁ cadastrado.
+ *
+ * A ordem é a inversa da remoção, e pelo mesmo motivo: aqui o risco está
+ * em gravar no banco o caminho de um arquivo que não subiu. Sobe-se
+ * primeiro, grava-se depois — se a RPC falhar, o pior caso é uma imagem
+ * órfã no bucket, e não uma foto quebrada na pasta do instrumento.
+ *
+ * @param {string} instrumentoId
+ * @param {string} tag          pasta do instrumento no Storage
+ * @param {File}   arquivo      a imagem
+ * @param {string} [observacao] o que a foto mostra; vai para o histórico
+ */
+export async function anexarFotoInstrumento(instrumentoId, tag, arquivo, observacao = ''){
+  const caminho = await enviarArquivo(CONFIG.BUCKETS.fotos, arquivo, pastaDoInstrumento(tag));
+  return ok(await sb.rpc('anexar_foto_instrumento', {
+    p_instrumento_id: instrumentoId,
+    p_foto_path:      caminho,
+    p_observacao:     observacao || null
+  }));
+}
+
 export const anexarDocumento = async doc =>
   ok(await sb.from('documentos').insert(doc).select().single());
 

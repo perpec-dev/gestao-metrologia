@@ -16,6 +16,15 @@
 --      gaveta e não acha o instrumento precisa registrar isso na hora.
 --      Motivo, justificativa e auditoria continuam obrigatórios; APAGAR
 --      segue exclusivo do administrador.
+--  11. Remover (ou substituir) arquivo da pasta do instrumento, com
+--      justificativa obrigatória na trilha de auditoria — para o
+--      certificado anexado no instrumento errado. Só administrador, que
+--      é o que a política de DELETE do Storage já exigia.
+--  12. Anexar foto a um instrumento JÁ cadastrado. A foto é exigida no
+--      cadastro pela tela e não pode ser na importação em massa — uma
+--      planilha não carrega imagens. Sem este caminho, a única saída
+--      seria recadastrar o instrumento, trocando a tag e jogando fora o
+--      histórico.
 --
 -- COMO RODAR (SQL Editor do Supabase, nesta ordem):
 --   1) este arquivo   -> configuração nova
@@ -63,17 +72,34 @@ create policy config_criar on public.config
   for insert to authenticated with check (public.sou_admin());
 
 -- ---------------------------------------------------------------------
--- 3. AVISAR O POSTGREST
+-- 3. COLUNA NOVA — quando a foto foi tirada  (item 12)
+--
+-- Duas coisas moram na tabela `inspecoes` porque as duas são "uma foto
+-- com um texto", mas contam fatos diferentes: a inspeção DE RECEBIMENTO
+-- prova o estado em que o instrumento chegou; a foto anexada DEPOIS
+-- mostra o instrumento de hoje. As linhas que já existem são todas de
+-- recebimento — é o único jeito que havia de criar uma —, então o default
+-- já as classifica corretamente e nenhuma precisa ser corrigida à mão.
+-- ---------------------------------------------------------------------
+alter table public.inspecoes
+  add column if not exists momento text not null default 'recebimento';
+
+alter table public.inspecoes drop constraint if exists insp_momento_ok;
+alter table public.inspecoes add constraint insp_momento_ok
+  check (momento in ('recebimento','posterior'));
+
+-- ---------------------------------------------------------------------
+-- 4. AVISAR O POSTGREST
 --     Funções e views novas só aparecem para a API depois que o cache de
 --     esquema recarrega.
 -- ---------------------------------------------------------------------
 notify pgrst, 'reload schema';
 
 -- ---------------------------------------------------------------------
--- 4. CONFERÊNCIA
+-- 5. CONFERÊNCIA
 -- ---------------------------------------------------------------------
 do $$
-declare v_cfg int; v_ins int;
+declare v_cfg int; v_ins int; v_col int;
 begin
   select count(*) into v_cfg
     from public.config where chave = 'alerta_vencimento_proximo_mes';
@@ -83,7 +109,15 @@ begin
    where table_schema = 'public' and table_name = 'config'
      and privilege_type = 'INSERT' and grantee = 'authenticated';
 
-  if v_cfg = 1 and v_ins >= 1 then
+  select count(*) into v_col
+    from information_schema.columns
+   where table_schema = 'public' and table_name = 'inspecoes' and column_name = 'momento';
+
+  if v_col <> 1 then
+    raise warning 'A coluna inspecoes.momento não foi criada — o item 12 não vai funcionar.';
+  end if;
+
+  if v_cfg = 1 and v_ins >= 1 and v_col = 1 then
     raise notice 'Estrutura pronta. Agora rode 01_schema.sql, 02_rls.sql e 03_views.sql, nesta ordem.';
   else
     raise warning 'Faltou algo: config=% (esperado 1), grant de insert=% (esperado 2 colunas).',
@@ -120,6 +154,37 @@ end $$;
 -- select i.tag, i.descricao from public.instrumentos i
 --  where not exists (select 1 from public.vw_arquivos a where a.instrumento_id = i.id)
 --  order by i.tag;
+--
+-- -- Item 11: tudo que já foi removido ou substituído, e por quem.
+-- select a.criado_em, i.tag, a.campo, a.valor_antigo, a.valor_novo,
+--        a.justificativa, a.usuario_email
+--   from public.auditoria a
+--   join public.instrumentos i on i.id = a.entidade_id
+--  where a.campo in ('arquivo_removido','arquivo_substituido')
+--  order by a.criado_em desc;
+--
+-- -- Item 11: calibrações que ficaram sem certificado depois de uma
+-- --          remoção. Idealmente, lista vazia.
+-- select i.tag, c.data_calibracao, c.criado_por_email
+--   from public.calibracoes c join public.instrumentos i on i.id = c.instrumento_id
+--  where coalesce(btrim(c.certificado_path),'') = ''
+--  order by c.data_calibracao desc;
+--
+-- -- Item 12: instrumentos sem NENHUMA foto — a lista de trabalho depois
+-- --          de uma importação em massa. É o mesmo recorte que o painel
+-- --          "Sem foto" da tela Arquivos mostra.
+-- select i.tag, i.descricao, i.data_entrada
+--   from public.instrumentos i
+--  where i.condicao_fisica = 'ativo'
+--    and not exists (select 1 from public.inspecoes ins
+--                     where ins.instrumento_id = i.id
+--                       and coalesce(btrim(ins.foto_path),'') <> '')
+--  order by i.tag;
+--
+-- -- Item 12: fotos anexadas depois do cadastro, e por quem.
+-- select i.tag, ins.criado_em, ins.criado_por_email, ins.laudo
+--   from public.inspecoes ins join public.instrumentos i on i.id = ins.instrumento_id
+--  where ins.momento = 'posterior' order by ins.criado_em desc;
 --
 -- -- Item 1: confirmar que administrador consegue gravar parâmetro.
 -- select public.salvar_config('dias_proximo_vencimento',

@@ -283,6 +283,17 @@ create index if not exists doc_instr_idx on public.documentos (instrumento_id);
 
 -- ---------------------------------------------------------------------
 -- 8. INSPEÇÕES VISUAIS (recebimento)
+--
+-- `momento` separa duas coisas que moram na mesma tabela porque as duas
+-- são "uma foto com um texto", mas que contam fatos diferentes:
+--   'recebimento' — a inspeção de entrada, feita no dia em que o
+--                   instrumento chegou. É prova do estado em que ele foi
+--                   recebido.
+--   'posterior'   — a foto anexada depois, para um instrumento que entrou
+--                   sem ela (importação em massa, acervo antigo). Não é
+--                   inspeção de entrada e não pode ser lida como se
+--                   fosse: quem confere o inventário precisa saber se a
+--                   foto mostra o instrumento no recebimento ou hoje.
 -- ---------------------------------------------------------------------
 create table if not exists public.inspecoes (
   id             uuid primary key default gen_random_uuid(),
@@ -290,8 +301,10 @@ create table if not exists public.inspecoes (
   foto_path      text,
   laudo          text,
   comentario     text,
+  momento        text not null default 'recebimento',
   criado_por_email text,
-  criado_em      timestamptz not null default now()
+  criado_em      timestamptz not null default now(),
+  constraint insp_momento_ok check (momento in ('recebimento','posterior'))
 );
 create index if not exists insp_instr_idx on public.inspecoes (instrumento_id);
 
@@ -643,12 +656,13 @@ begin
   ) returning id into v_id;
 
   if p_inspecao is not null and p_inspecao <> 'null'::jsonb then
-    insert into public.inspecoes (instrumento_id, foto_path, laudo, comentario, criado_por_email)
+    insert into public.inspecoes (instrumento_id, foto_path, laudo, comentario,
+                                  momento, criado_por_email)
     values (v_id,
             nullif(btrim(coalesce(p_inspecao->>'foto_path','')),''),
             nullif(btrim(coalesce(p_inspecao->>'laudo','')),''),
             nullif(btrim(coalesce(p_inspecao->>'comentario','')),''),
-            public.meu_email());
+            'recebimento', public.meu_email());
   end if;
 
   if p_calibracao is not null and p_calibracao <> 'null'::jsonb
@@ -914,7 +928,176 @@ begin
    where id = p_instrumento_id;
 end $$;
 
--- 13.6 E-mail do responsável pelo setor (cobrança de devolução)
+-- ---------------------------------------------------------------------
+-- 13.6 REMOVER (ou SUBSTITUIR) UM ARQUIVO DA PASTA DO INSTRUMENTO
+--
+-- O caso que existe de verdade: o certificado do P-PAQ-03 foi anexado na
+-- calibração do P-PAQ-08. O arquivo errado precisa sair — e o que a
+-- metrologia perde se ele simplesmente sumir é a explicação de por que
+-- sumiu. Daí a justificativa obrigatória: o arquivo vai embora, o
+-- registro de que ele existiu e foi retirado fica para sempre na trilha.
+--
+-- SUBSTITUIR é o caminho preferido, e não um extra: anexar o arquivo
+-- certo no lugar do errado resolve o engano sem deixar a calibração sem
+-- prova. Remover sem substituto é legítimo (o arquivo pode não ter nada
+-- a ver com este instrumento), mas deixa um registro de calibração sem
+-- certificado — o oposto do que registrar_calibracao exige na entrada.
+-- A tela avisa disso antes de confirmar.
+--
+-- Só ADMINISTRADOR, e não por hierarquia: a política de DELETE do
+-- Storage (02_rls.sql) já exige admin. Se a RPC aceitasse metrologista,
+-- o banco perderia a referência do arquivo e o arquivo continuaria lá —
+-- o pior dos dois mundos.
+--
+-- p_origem diz em que tabela mexer; vem da coluna `origem` de
+-- vw_arquivos, então a tela nunca precisa saber onde cada caminho mora.
+-- ---------------------------------------------------------------------
+create or replace function public.remover_arquivo(
+  p_origem         text,
+  p_registro_id    uuid,
+  p_justificativa  text,
+  p_substituto     text default null      -- null = remover; caminho = substituir
+) returns uuid language plpgsql security definer set search_path = public as $$
+declare
+  v_instr  uuid;
+  v_atual  text;
+  v_rotulo text;
+  v_tipo_mov text;
+  v_momento  text;
+  v_laudo    text;
+  v_novo   text := nullif(btrim(coalesce(p_substituto,'')),'');
+begin
+  if not public.sou_admin() then
+    raise exception 'Somente administradores podem remover arquivos do acervo.';
+  end if;
+  if char_length(btrim(coalesce(p_justificativa,''))) < 10 then
+    raise exception 'Informe a justificativa da remoção (mínimo de 10 caracteres).';
+  end if;
+
+  if p_origem = 'calibracao_certificado' then
+    select instrumento_id, certificado_path into v_instr, v_atual
+      from public.calibracoes where id = p_registro_id;
+    v_rotulo := 'Certificado de calibração';
+    update public.calibracoes set certificado_path = v_novo where id = p_registro_id;
+
+  elsif p_origem = 'calibracao_laudo' then
+    select instrumento_id, laudo_path into v_instr, v_atual
+      from public.calibracoes where id = p_registro_id;
+    v_rotulo := 'Laudo da calibração';
+    update public.calibracoes set laudo_path = v_novo where id = p_registro_id;
+
+  elsif p_origem = 'inspecao_foto' then
+    select instrumento_id, foto_path, momento, coalesce(btrim(laudo),'')
+      into v_instr, v_atual, v_momento, v_laudo
+      from public.inspecoes where id = p_registro_id;
+    v_rotulo := 'Foto do instrumento';
+    -- Foto anexada depois é só uma foto: tirada ela, não sobra registro
+    -- nenhum, e a linha vazia apareceria no histórico como uma inspeção
+    -- que nunca houve. A inspeção DE RECEBIMENTO é outra coisa — o laudo
+    -- de entrada continua valendo mesmo sem a imagem, então ela fica.
+    if v_novo is null and v_momento = 'posterior' and v_laudo = '' then
+      delete from public.inspecoes where id = p_registro_id;
+    else
+      update public.inspecoes set foto_path = v_novo where id = p_registro_id;
+    end if;
+
+  elsif p_origem = 'movimentacao_termo' then
+    select instrumento_id, termo_path, tipo into v_instr, v_atual, v_tipo_mov
+      from public.movimentacoes where id = p_registro_id;
+    -- Posse e externo não existem sem termo assinado (constraint
+    -- termo_obrigatorio). Deixar o UPDATE bater na constraint devolveria
+    -- um erro de banco ilegível; a regra é dita aqui, com nome.
+    if v_tipo_mov in ('posse','externo') and v_novo is null then
+      raise exception 'O termo de responsabilidade de um empréstimo do tipo "%" não pode ser removido: anexe o termo correto no lugar.', v_tipo_mov;
+    end if;
+    v_rotulo := 'Termo de responsabilidade';
+    update public.movimentacoes set termo_path = v_novo where id = p_registro_id;
+
+  elsif p_origem = 'documento' then
+    select instrumento_id, arquivo_path into v_instr, v_atual
+      from public.documentos where id = p_registro_id;
+    v_rotulo := 'Documento anexado';
+    if v_novo is null then
+      delete from public.documentos where id = p_registro_id;
+    else
+      update public.documentos set arquivo_path = v_novo where id = p_registro_id;
+    end if;
+
+  else
+    raise exception 'Origem de arquivo desconhecida: %', p_origem;
+  end if;
+
+  if v_atual is null then
+    raise exception 'Arquivo não encontrado. Ele pode já ter sido removido por outra pessoa — recarregue a pasta.';
+  end if;
+  -- A auditoria é sempre presa a um instrumento: sem ele não há onde
+  -- registrar a remoção, e remoção sem registro é o que esta função
+  -- existe para impedir.
+  if v_instr is null then
+    raise exception 'Este arquivo não está vinculado a nenhum instrumento e não pode ser removido por aqui.';
+  end if;
+
+  perform public.auditar(
+    'instrumentos', v_instr,
+    case when v_novo is null then 'arquivo_removido' else 'arquivo_substituido' end,
+    v_rotulo || ' · ' || regexp_replace(v_atual, '^.*/', ''),
+    case when v_novo is null then null else regexp_replace(v_novo, '^.*/', '') end,
+    p_justificativa);
+
+  -- Devolve o instrumento para a tela recarregar a pasta certa.
+  return v_instr;
+end $$;
+
+-- ---------------------------------------------------------------------
+-- 13.7 ANEXAR FOTO A UM INSTRUMENTO JÁ CADASTRADO
+--
+-- A foto é obrigatória no cadastro pela tela — e não é, nem pode ser, na
+-- IMPORTAÇÃO EM MASSA: uma planilha com duzentas linhas não carrega
+-- duzentas imagens. O acervo antigo entra assim, e entra sem foto. Sem um
+-- caminho para anexá-la depois, a única saída seria recadastrar o
+-- instrumento, o que trocaria a tag e jogaria fora o histórico.
+--
+-- A foto entra como uma inspeção de momento 'posterior'. Ela NÃO vira
+-- inspeção de recebimento, e a distinção não é preciosismo: a inspeção de
+-- entrada é prova do estado em que o instrumento chegou. Uma foto tirada
+-- hoje, meses depois, mostra o instrumento de hoje. Chamar as duas de
+-- "inspeção visual" faria a linha do tempo afirmar o que ninguém
+-- verificou.
+--
+-- Não há auditoria separada aqui. Anexar não destrói nada, e a própria
+-- linha da inspeção já guarda quem anexou e quando — a mesma informação
+-- em dois lugares viraria duas linhas no histórico para um gesto só.
+-- Remover, sim, é auditado: ali a prova desaparece (13.6).
+-- ---------------------------------------------------------------------
+create or replace function public.anexar_foto_instrumento(
+  p_instrumento_id uuid,
+  p_foto_path      text,
+  p_observacao     text default null
+) returns uuid language plpgsql security definer set search_path = public as $$
+declare
+  v_foto text := nullif(btrim(coalesce(p_foto_path,'')),'');
+  v_tag  text;
+  v_id   uuid;
+begin
+  if not public.sou_ativo() then raise exception 'Usuário sem permissão.'; end if;
+
+  select tag into v_tag from public.instrumentos where id = p_instrumento_id;
+  if v_tag is null then raise exception 'Instrumento não encontrado.'; end if;
+
+  if v_foto is null then
+    raise exception 'Anexe a imagem antes de salvar.';
+  end if;
+
+  insert into public.inspecoes (instrumento_id, foto_path, laudo, momento, criado_por_email)
+  values (p_instrumento_id, v_foto,
+          nullif(btrim(coalesce(p_observacao,'')),''),
+          'posterior', public.meu_email())
+  returning id into v_id;
+
+  return v_id;
+end $$;
+
+-- 13.8 E-mail do responsável pelo setor (cobrança de devolução)
 create or replace function public.salvar_email_setor(
   p_setor text,
   p_email text,

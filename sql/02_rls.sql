@@ -106,6 +106,11 @@ grant execute on function public.cfg_int(text,int) to authenticated;
 grant execute on function public.cfg_txt(text,text) to authenticated;
 grant execute on function public.cfg_bool(text,boolean) to authenticated;
 grant execute on function public.salvar_config(text,text) to authenticated;
+grant execute on function public.remover_arquivo(text,uuid,text,text) to authenticated;
+-- Anexar foto depois do cadastro é trabalho de metrologista (sou_ativo),
+-- não de administrador: quem encontra o instrumento sem foto na bancada é
+-- quem tira a foto. Remover arquivo continua sendo só do administrador.
+grant execute on function public.anexar_foto_instrumento(uuid,text,text) to authenticated;
 grant execute on function public.limite_alerta_vencimento() to authenticated;
 grant execute on function public.gerar_tag(uuid,text) to authenticated;
 grant execute on function public.calcular_data_proxima(uuid,date,boolean) to authenticated;

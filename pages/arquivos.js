@@ -12,18 +12,23 @@
    agora sobem para <bucket>/<tag>/<data>-<nome>, então a pasta existe
    dos dois lados — nesta tela e no painel do Supabase.
 
-   Leitura pura: nada aqui apaga nem move arquivo.
+   A tela começou como leitura pura e ganhou dois gestos, os dois nascidos
+   do mesmo lugar — a pasta é onde se DESCOBRE que falta ou sobra alguma
+   coisa: anexar a foto que a importação em massa não tinha como trazer, e
+   remover o arquivo que entrou por engano (este, só administrador e com
+   justificativa na auditoria).
    ===================================================================== */
 import { esc, chave, toast, msgErro, debounce, htmlCarregando, htmlVazio,
          lembrar, lembrado } from '../utils.js';
 import { listarArquivos, listarInstrumentos, ouvir } from '../supabase.js';
-import { htmlArquivos, resumoArquivos } from '../components/arquivos.js';
+import { htmlArquivos, resumoArquivos, ligarRemocao,
+         htmlBotaoFoto, ligarAnexoFoto } from '../components/arquivos.js';
 import { ligarArquivos } from '../components/timeline.js';
 import { irPara } from '../router.js';
 
 let desligarRealtime = null;
-let pastas = [];          // [{ id, tag, descricao, familia_nome, inativo, arquivos:[] }]
-let filtros = { texto:'', tipo:'', vazias:false };
+let pastas = [];          // [{ id, tag, descricao, familia_nome, inativo, temFoto, arquivos:[] }]
+let filtros = { texto:'', tipo:'', vazias:false, semFoto:false };
 
 export function destroy(){
   if (desligarRealtime){ desligarRealtime(); desligarRealtime = null; }
@@ -56,6 +61,11 @@ export async function render(container){
         <label for="fVazias" title="Instrumentos que ainda não têm nenhum documento anexado">
           Mostrar pastas vazias</label>
       </div>
+      <div class="field field-inline" style="align-self:end;padding-bottom:9px">
+        <input type="checkbox" id="fSemFoto" ${filtros.semFoto ? 'checked' : ''}>
+        <label for="fSemFoto" title="Instrumentos sem nenhuma foto — a fila de trabalho depois de uma importação em massa">
+          Só os sem foto</label>
+      </div>
       <div class="field" style="align-self:end;padding-bottom:2px">
         <button class="btn btn-outline" id="btAtualizar">Atualizar</button>
       </div>
@@ -68,16 +78,17 @@ export async function render(container){
 
   const aplicar = () => {
     filtros = {
-      texto:  container.querySelector('#fBusca').value,
-      tipo:   container.querySelector('#fTipo').value,
-      vazias: container.querySelector('#fVazias').checked
+      texto:   container.querySelector('#fBusca').value,
+      tipo:    container.querySelector('#fTipo').value,
+      vazias:  container.querySelector('#fVazias').checked,
+      semFoto: container.querySelector('#fSemFoto').checked
     };
     lembrar('filtros.arquivos', filtros);
     pintar(container);
   };
 
   container.querySelector('#fBusca').addEventListener('input', debounce(aplicar, 200));
-  ['#fTipo','#fVazias'].forEach(s =>
+  ['#fTipo','#fVazias','#fSemFoto'].forEach(s =>
     container.querySelector(s).addEventListener('change', aplicar));
   container.querySelector('#btAtualizar').addEventListener('click', () => carregar(container));
 
@@ -110,13 +121,19 @@ async function carregar(container, silencioso = false){
     porInstrumento.get(a.instrumento_id).push(a);
   });
 
-  pastas = instrumentos.map(i => ({
-    id: i.id, tag: i.tag, descricao: i.descricao,
-    familia_nome: i.familia_nome,
-    referencia: i.tipo === 'REFERENCIA',
-    inativo: i.condicao_fisica === 'inativo',
-    arquivos: porInstrumento.get(i.id) || []
-  }));
+  pastas = instrumentos.map(i => {
+    const arquivos = porInstrumento.get(i.id) || [];
+    return {
+      id: i.id, tag: i.tag, descricao: i.descricao,
+      familia_nome: i.familia_nome,
+      referencia: i.tipo === 'REFERENCIA',
+      inativo: i.condicao_fisica === 'inativo',
+      // Calculado ANTES do filtro de tipo: "esta pasta tem foto?" é uma
+      // pergunta sobre o instrumento, e não sobre o recorte na tela.
+      temFoto: arquivos.some(a => a.tipo === 'Foto'),
+      arquivos
+    };
+  });
 
   pintar(container);
 }
@@ -135,9 +152,13 @@ function filtrar(){
       return { ...p, arquivos };
     })
     .filter(p => {
+      // "Só os sem foto" é a fila de trabalho de depois da importação em
+      // massa: ali a pasta vazia é justamente o que se procura, então o
+      // recorte manda nela e o "mostrar vazias" sai da frente.
+      if (filtros.semFoto && p.temFoto) return false;
       // Pasta sem arquivo só aparece quando alguém pede — é o recorte de
       // "o que ainda falta documentar", não o padrão de navegação.
-      if (!filtros.vazias && !p.arquivos.length) return false;
+      if (!filtros.vazias && !filtros.semFoto && !p.arquivos.length) return false;
       if (!t) return true;
       const alvo = chave([p.tag, p.descricao, p.familia_nome,
                           ...p.arquivos.map(a => a.nome + ' ' + a.arquivo_path)].join(' '));
@@ -149,11 +170,12 @@ function pintar(container){
   const el = container.querySelector('#listaArq');
   const lista = filtrar();
 
-  resumo(container, lista);
+  resumo(container);
 
   if (!lista.length){
-    el.innerHTML = htmlVazio(filtros.texto || filtros.tipo
-      ? 'Nenhuma pasta com esses filtros.'
+    el.innerHTML = htmlVazio(
+      filtros.semFoto ? 'Todo instrumento do acervo já tem foto.'
+      : filtros.texto || filtros.tipo ? 'Nenhuma pasta com esses filtros.'
       : 'Nenhum arquivo anexado ainda. Certificados, laudos, fotos e termos aparecem aqui automaticamente.');
     return;
   }
@@ -177,6 +199,8 @@ function pintar(container){
           ${p.referencia ? '<span class="bdg s-referencia">Referência</span>' : ''}
           ${p.inativo ? '<span class="bdg s-inativo">Inativo</span>' : ''}
           <span style="flex:1"></span>
+          ${p.temFoto ? '' : '<span class="sem-foto">Sem foto</span>'}
+          ${htmlBotaoFoto(p, p.temFoto ? 'Anexar foto' : 'Anexar a foto')}
           <button class="btn btn-outline btn-sm" data-ficha="${esc(p.id)}">Abrir ficha</button>
         </div>
         ${htmlArquivos(p.arquivos,
@@ -185,6 +209,11 @@ function pintar(container){
     </details>`).join('');
 
   ligarArquivos(el);
+
+  // Remover daqui recarrega a tela inteira: o resumo, a contagem de
+  // pastas vazias e a etiqueta da pasta mudam junto com o arquivo.
+  ligarRemocao(el, lista.flatMap(p => p.arquivos), () => carregar(container, true));
+  ligarAnexoFoto(el, () => carregar(container, true));
 
   el.querySelectorAll('[data-ficha]').forEach(b => b.addEventListener('click', e => {
     e.preventDefault();
@@ -197,12 +226,17 @@ function pintar(container){
     lembrar('arquivos.aberta', d.open ? d.dataset.pasta : null)));
 }
 
-function resumo(container, lista){
+/* Quatro indicadores, e o quarto passou a ser "Sem foto" no lugar de
+   "Mostrando N pastas": a contagem do recorte atual é a própria lista
+   logo abaixo, enquanto "quantos instrumentos ainda não têm foto" é a
+   pergunta que ninguém responde olhando a tela. */
+function resumo(container){
   const el = container.querySelector('#resumoArq');
   if (!el) return;
   const total    = pastas.reduce((s,p) => s + p.arquivos.length, 0);
   const comPasta = pastas.filter(p => p.arquivos.length).length;
   const semNada  = pastas.filter(p => !p.arquivos.length).length;
+  const semFoto  = pastas.filter(p => !p.temFoto).length;
 
   el.innerHTML = `
     <div class="kpi c-total estatico">
@@ -214,16 +248,28 @@ function resumo(container, lista){
     <button class="kpi c-descalibrado" id="kpiVazias">
       <div class="k">Pastas vazias</div><div class="v">${semNada}</div>
       <div class="d">sem nenhum documento anexado</div></button>
-    <div class="kpi c-solicitado estatico">
-      <div class="k">Mostrando</div><div class="v">${lista.length}</div>
-      <div class="d">pasta(s) com os filtros atuais</div></div>`;
+    <!-- Sem foto é o indicador da importação em massa: a planilha entra
+         sem imagem, e é por ela que se reconhece o instrumento na
+         conferência do inventário. -->
+    <button class="kpi c-proximo" id="kpiSemFoto">
+      <div class="k">Sem foto</div><div class="v">${semFoto}</div>
+      <div class="d">instrumentos a fotografar</div></button>`;
 
-  const bt = el.querySelector('#kpiVazias');
-  if (bt) bt.addEventListener('click', () => {
-    const cx = container.querySelector('#fVazias');
+  /* Marcar um recorte desmarca o outro: "pastas vazias" e "sem foto" se
+     sobrepõem (toda pasta vazia está sem foto), e deixar os dois ligados
+     mostraria uma lista que não responde a nenhuma das duas perguntas. */
+  const recorte = (marcado, desmarcado) => {
+    const cx = container.querySelector(marcado);
+    container.querySelector(desmarcado).checked = false;
     cx.checked = true;
     container.querySelector('#fTipo').value = '';
     container.querySelector('#fBusca').value = '';
     cx.dispatchEvent(new Event('change'));
-  });
+  };
+
+  const bt = el.querySelector('#kpiVazias');
+  if (bt) bt.addEventListener('click', () => recorte('#fVazias', '#fSemFoto'));
+
+  const btF = el.querySelector('#kpiSemFoto');
+  if (btF) btF.addEventListener('click', () => recorte('#fSemFoto', '#fVazias'));
 }

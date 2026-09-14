@@ -477,7 +477,24 @@ function previa(el, linhas){
         </div>
         ${falhas.length ? `<ul style="font-size:13px;margin-left:18px">${
           falhas.map(f => `<li>Linha ${f.linha}: ${esc(f.erro)}</li>`).join('')}</ul>` : ''}
+        ${feitos ? `
+        <!-- 'fixa': é a única pendência que a importação deixa em aberto,
+             e ela não aparece em lugar nenhum se não for dita aqui. A
+             planilha não carrega imagens; a foto é o que identifica o
+             instrumento na conferência do inventário. -->
+        <div class="warn-box w fixa" style="margin-top:14px">
+          <b>Estes instrumentos entraram sem foto.</b> A planilha não carrega imagens —
+          a foto se anexa depois, pela pasta do instrumento, sem recadastrar nada.
+          Em <b>Arquivos</b>, o indicador <b>Sem foto</b> lista quem ainda falta.
+          <div style="margin-top:10px">
+            <button class="btn btn-outline btn-sm" id="btIrArquivos">Ir para Arquivos</button>
+          </div>
+        </div>` : ''}
       </div></div>`;
+
+    const btArq = res.querySelector('#btIrArquivos');
+    if (btArq) btArq.addEventListener('click', () => irPara('arquivos'));
+
     bt.textContent = 'IMPORTAÇÃO CONCLUÍDA';
     toast(`${feitos} instrumento(s) importados.`, falhas.length ? 'error' : 'success');
     familias = await listarFamilias();

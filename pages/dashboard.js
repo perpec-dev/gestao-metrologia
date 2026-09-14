@@ -138,7 +138,18 @@ async function carregar(silencioso = false){
 /* ==================================================================== */
 function indicadores(d){
   const el = elRaiz.querySelector('#kpis');
+  /* O indicador conta TUDO que está fora da sala de metrologia — é um
+     fato sobre o acervo. Quem lista só os casuais é a carta lá embaixo,
+     e é por isso que a linha de baixo mostra a divisão: sem ela, o "3"
+     aqui e os "2" da lista pareceriam um erro. */
   const foraAlerta = d.emprestimos.filter(m => m.em_alerta).length;
+  const casuais    = d.emprestimos.filter(m => m.tipo === 'casual').length;
+  const outros     = d.emprestimos.length - casuais;
+  const detalheEmp = [
+    foraAlerta ? foraAlerta + ' fora do prazo' : null,
+    casuais + ' casual(is)',
+    outros ? outros + ' em posse/externo' : null
+  ].filter(Boolean).join(' · ') || 'nenhum instrumento fora';
 
   el.innerHTML = `
     <button class="kpi c-total" data-ir="">
@@ -156,7 +167,7 @@ function indicadores(d){
       <div class="d">${d.solicitados.length} solicitada(s), ${d.externas.length} enviada(s)</div></button>
     <div class="kpi c-solicitado estatico">
       <div class="k">Emprestados</div><div class="v">${d.emprestimos.length}</div>
-      <div class="d">${foraAlerta ? foraAlerta + ' fora do prazo' : 'todos dentro do prazo'}</div></div>`;
+      <div class="d">${esc(detalheEmp)}</div></div>`;
 
   // Contagem crescente: o número chama atenção para si sem piscar nada.
   el.querySelectorAll('.kpi .v').forEach(v => animarNumero(v, v.textContent));
@@ -284,8 +295,15 @@ function cardLista({ id, icone, titulo, resumo, itens }){
 }
 
 function listas({ alvo, descalibrados, proximos, emprestimos, alerta }){
-  const alertas  = emprestimos.filter(m => m.em_alerta);
-  const externos = emprestimos.filter(m => m.tipo === 'externo');
+  /* Só empréstimo CASUAL entra na lista do painel. Casual é o que devia
+     ter voltado no mesmo dia — é dele que se cobra devolução. Posse e
+     externo são de prazo indeterminado por definição: listá-los aqui
+     todo dia é encher a primeira tela com o que ninguém vai fazer nada
+     a respeito. Eles continuam inteiros na tela de Empréstimo, e o
+     indicador lá em cima segue contando o acervo que está fora. */
+  const casuais = emprestimos.filter(m => m.tipo === 'casual');
+  const outros  = emprestimos.filter(m => m.tipo !== 'casual');
+  const alertas = casuais.filter(m => m.em_alerta);
 
   const maisUrgente = proximos.length ? proximos[0].dias_para_vencer : null;
 
@@ -318,32 +336,32 @@ function listas({ alvo, descalibrados, proximos, emprestimos, alerta }){
     <div class="card">
       <div class="card-head">
         <svg viewBox="0 0 24 24"><path d="M20 12v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-7M2 7h20v5H2zM12 7v14"/></svg>
-        <h2>Empréstimos em aberto</h2>
-        <span class="right">${emprestimos.length}${alertas.length ? ' · ' + alertas.length + ' em alerta' : ''}</span>
+        <h2>Empréstimos casuais em aberto</h2>
+        <span class="right">${casuais.length}${alertas.length ? ' · ' + alertas.length + ' em alerta' : ''}</span>
       </div>
       <div class="card-body tight">
-        ${emprestimos.length ? `
+        ${casuais.length ? `
           <!-- 'fixa': isto é o número do dia, não explicação de tela.
                Aviso operacional não se guarda atrás de um clique. -->
           ${alertas.length ? `<div class="warn-box w fixa">
             <b>${alertas.length}</b> empréstimo(s) passaram do prazo. Cobre a devolução.</div>` : ''}
-          ${externos.length ? `<div class="warn-box i fixa">
-            <b>${externos.length}</b> instrumento(s) estão fora da empresa (empréstimo externo).</div>` : ''}
-          ${emprestimos.map(m => `
+          ${casuais.map(m => `
             <div class="rec ${m.em_alerta ? 's-descalibrado' : 's-solicitado'}">
               <div class="rec-in"><div class="rec-grid">
                 <div><div class="k">Tag</div><div class="v mono">${esc(m.tag)}</div></div>
                 <div><div class="k">Instrumento</div><div class="v">${esc(m.descricao)}</div></div>
-                <div><div class="k">Tipo</div><div class="v">${esc(m.tipo)}</div></div>
                 <div><div class="k">Com</div><div class="v">${esc(m.responsavel)} · ${esc(m.setor)}</div></div>
                 <div><div class="k">Saída</div><div class="v">${esc(fmtDT(m.data_saida))}</div></div>
                 <div><div class="k">Fora há</div><div class="v" style="color:${
                   m.em_alerta ? 'var(--status-descalibrado)' : 'inherit'}">${esc(m.dias_fora)} dia(s)</div></div>
               </div></div>
             </div>`).join('')}
-          <div style="margin-top:12px"><button class="btn btn-outline btn-sm" id="btIrEmp">
-            Abrir tela de empréstimo</button></div>
-        ` : htmlVazio('Nenhum instrumento emprestado no momento.')}
+        ` : htmlVazio('Nenhum empréstimo casual em aberto.')}
+        ${outros.length ? `<p style="font-size:12px;color:var(--muted);margin-top:12px;line-height:1.5">
+          ${outros.length} empréstimo(s) em <b>posse</b> ou <b>externo</b> não entram nesta lista:
+          eles são de prazo indeterminado por definição. Estão na tela de Empréstimo.</p>` : ''}
+        <div style="margin-top:12px"><button class="btn btn-outline btn-sm" id="btIrEmp">
+          Abrir tela de empréstimo</button></div>
       </div>
     </div>`;
 

@@ -166,12 +166,19 @@ alter view public.vw_emprestimos_historico set (security_invoker = on);
 -- também passou a ser <tag>/<arquivo>, então a pasta existe dos dois
 -- lados — na tela e no painel do Supabase.
 -- ---------------------------------------------------------------------
+-- As duas últimas colunas — `origem` e `registro_id` — são o endereço do
+-- arquivo: dizem em QUE tabela e em QUE linha aquele caminho está
+-- guardado. Sem elas a tela saberia exibir o arquivo e não saberia
+-- removê-lo, porque o mesmo PDF pode estar numa coluna de calibracoes,
+-- de movimentacoes ou numa linha de documentos. É por esse par que a RPC
+-- remover_arquivo sabe onde mexer.
 create or replace view public.vw_arquivos as
   select c.instrumento_id, i.tag, i.descricao as instrumento,
          'certificados'::text as bucket, c.certificado_path as arquivo_path,
          'Certificado'::text  as tipo,
          'Certificado · calibração de ' || to_char(c.data_calibracao,'DD/MM/YYYY') as nome,
-         c.criado_em as quando, c.criado_por_email as autor
+         c.criado_em as quando, c.criado_por_email as autor,
+         'calibracao_certificado'::text as origem, c.id as registro_id
     from public.calibracoes c
     join public.instrumentos i on i.id = c.instrumento_id
    where coalesce(btrim(c.certificado_path),'') <> ''
@@ -179,15 +186,19 @@ union all
   select c.instrumento_id, i.tag, i.descricao,
          'laudos', c.laudo_path, 'Laudo',
          'Laudo · calibração de ' || to_char(c.data_calibracao,'DD/MM/YYYY'),
-         c.criado_em, c.criado_por_email
+         c.criado_em, c.criado_por_email,
+         'calibracao_laudo', c.id
     from public.calibracoes c
     join public.instrumentos i on i.id = c.instrumento_id
    where coalesce(btrim(c.laudo_path),'') <> ''
 union all
   select ins.instrumento_id, i.tag, i.descricao,
          'fotos', ins.foto_path, 'Foto',
-         coalesce(nullif(btrim(ins.laudo),''), 'Foto do instrumento'),
-         ins.criado_em, ins.criado_por_email
+         coalesce(nullif(btrim(ins.laudo),''),
+                  case when ins.momento = 'posterior' then 'Foto anexada ao cadastro'
+                       else 'Foto do recebimento' end),
+         ins.criado_em, ins.criado_por_email,
+         'inspecao_foto', ins.id
     from public.inspecoes ins
     join public.instrumentos i on i.id = ins.instrumento_id
    where coalesce(btrim(ins.foto_path),'') <> ''
@@ -195,7 +206,8 @@ union all
   select m.instrumento_id, i.tag, i.descricao,
          'termos', m.termo_path, 'Termo',
          'Termo · ' || m.tipo || ' para ' || m.responsavel || ' (' || m.setor || ')',
-         m.data_saida, m.criado_por_email
+         m.data_saida, m.criado_por_email,
+         'movimentacao_termo', m.id
     from public.movimentacoes m
     join public.instrumentos i on i.id = m.instrumento_id
    where coalesce(btrim(m.termo_path),'') <> ''
@@ -203,7 +215,8 @@ union all
   select d.instrumento_id, i.tag, i.descricao,
          d.bucket, d.arquivo_path, coalesce(nullif(btrim(d.tipo),''), 'Documento'),
          coalesce(nullif(btrim(d.nome),''), 'Documento anexado'),
-         d.criado_em, d.criado_por_email
+         d.criado_em, d.criado_por_email,
+         'documento', d.id
     from public.documentos d
     join public.instrumentos i on i.id = d.instrumento_id
    where d.instrumento_id is not null;
@@ -220,18 +233,42 @@ create or replace view public.vw_timeline as
          null::text as arquivo_bucket, null::text as arquivo_path, null::text as autor
     from public.instrumentos i
 union all
+  -- Uma foto anexada meses depois não é a inspeção de recebimento, e o
+  -- histórico não pode dizer que é: a inspeção de entrada prova o estado
+  -- em que o instrumento CHEGOU. Quem importou o acervo em massa e foi
+  -- fotografando instrumento por instrumento depois precisa ler essa
+  -- diferença na linha do tempo, não deduzi-la pela data.
   select ins.instrumento_id, ins.criado_em, 'inspecao',
-         'Inspeção visual',
+         case when ins.momento = 'posterior' then 'Foto do instrumento anexada'
+              else 'Inspeção visual' end,
          concat_ws(' · ', nullif(ins.laudo,''), nullif(ins.comentario,'')),
          'fotos', ins.foto_path, ins.criado_por_email
     from public.inspecoes ins
 union all
+  -- O STANDBY é dito aqui, no evento da calibração em que ele foi
+  -- decidido, e só aqui. Ele era repetido no alto da ficha como tarja e
+  -- como aviso — três lugares dizendo a mesma coisa sobre um estado que
+  -- nasceu de um clique só. Guardar em standby é uma escolha feita AO
+  -- registrar a calibração: é a linha desta calibração que tem de contar
+  -- por que este instrumento não tem data para vencer.
   select c.instrumento_id, c.criado_em, 'calibracao',
          'Calibração realizada em ' || to_char(c.data_calibracao,'DD/MM/YYYY'),
          concat_ws(' · ',
-           case when c.data_proxima is null then 'Sem vencimento (relógio pausado)'
+           -- "Standby", só a palavra. O que ela significa está explicado
+           -- na tela em que se decide guardar o instrumento; repetir a
+           -- explicação em cada linha do histórico é encher de texto uma
+           -- lista feita para ser varrida com o olho.
+           case when c.standby_apos then 'Standby'
+                when c.data_proxima is null then 'Sem data de vencimento'
                 else 'Próxima: ' || to_char(c.data_proxima,'DD/MM/YYYY') end,
-           nullif(c.pedidos_associados,''), nullif(c.obs_metrologista,'')),
+           -- A RASTREABILIDADE não entra aqui: ela nasce na SOLICITAÇÃO
+           -- da calibração e já aparece naquele evento, com a data em que
+           -- o pedido foi aberto. Repeti-la no registro do certificado
+           -- fazia o mesmo número surgir duas vezes na mesma lista, em
+           -- momentos que contam coisas diferentes. A coluna continua
+           -- gravada em calibracoes.pedidos_associados — o vínculo formal
+           -- entre certificado e pedido não se perde.
+           nullif(c.obs_metrologista,'')),
          'certificados', c.certificado_path, c.criado_por_email
     from public.calibracoes c
 union all
@@ -250,8 +287,19 @@ union all
          null, null, coalesce(m.devolvido_por_email, m.criado_por_email)
     from public.movimentacoes m where m.data_retorno is not null
 union all
+  -- O título da linha de auditoria é escrito para quem lê o histórico, e
+  -- não para quem escreveu a tabela: "Alteração: status_workflow" é o
+  -- nome da coluna vazando para a tela. O nome cru continua valendo como
+  -- saída para qualquer campo novo que apareça sem tradução aqui.
   select a.entidade_id, a.criado_em, 'auditoria',
-         'Alteração: ' || a.campo,
+         case a.campo
+           when 'status_workflow'     then 'Situação de calibração alterada'
+           when 'condicao_fisica'     then 'Condição física alterada'
+           when 'arquivo_removido'    then 'Arquivo removido'
+           when 'arquivo_substituido' then 'Arquivo substituído'
+           when 'apagado'             then 'Instrumento apagado'
+           else 'Alteração: ' || a.campo
+         end,
          concat_ws(' · ', coalesce(a.valor_antigo,'—') || ' → ' || coalesce(a.valor_novo,'—'),
                    nullif(a.justificativa,'')),
          null, null, a.usuario_email
