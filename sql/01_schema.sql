@@ -75,6 +75,84 @@ returns int language sql stable security definer set search_path = public as $$
   select coalesce((select valor::int from public.config where chave = p_chave), p_padrao)
 $$;
 
+-- Mesma coisa para chave de texto. Valor em branco conta como ausente:
+-- um campo esvaziado por engano na tela não pode virar regra de negócio.
+create or replace function public.cfg_txt(p_chave text, p_padrao text)
+returns text language sql stable security definer set search_path = public as $$
+  select coalesce(nullif(btrim((select valor from public.config where chave = p_chave)), ''), p_padrao)
+$$;
+
+-- Chave de configuração lida como sim/não.
+create or replace function public.cfg_bool(p_chave text, p_padrao boolean)
+returns boolean language sql stable security definer set search_path = public as $$
+  select lower(public.cfg_txt(p_chave, case when p_padrao then 'sim' else 'nao' end))
+         in ('sim','s','true','1','yes')
+$$;
+
+-- Gravação de parâmetro. Existe como RPC, e não como UPDATE direto, por um
+-- motivo prático: a tela usa upsert (a chave pode nunca ter sido semeada),
+-- e INSERT exige GRANT + policy próprios — que o 02_rls.sql revoga toda vez
+-- que roda. Uma chave de configuração deixava de ser gravável depois de
+-- cada manutenção do arquivo de permissões, com a tela dizendo apenas
+-- "operação bloqueada pelo banco". Aqui a regra é uma só e não depende de
+-- ordem de execução de arquivo.
+create or replace function public.salvar_config(p_chave text, p_valor text)
+returns void language plpgsql security definer set search_path = public as $$
+begin
+  if not public.sou_admin() then
+    raise exception 'Somente administradores podem alterar os parâmetros do sistema.';
+  end if;
+  if coalesce(btrim(p_chave),'') = '' then
+    raise exception 'Informe a chave da configuração.';
+  end if;
+  if coalesce(btrim(p_valor),'') = '' then
+    raise exception 'O parâmetro "%" não pode ficar em branco.', p_chave;
+  end if;
+
+  insert into public.config (chave, valor)
+  values (btrim(p_chave), btrim(p_valor))
+  on conflict (chave) do update set valor = excluded.valor;
+end $$;
+
+-- ---------------------------------------------------------------------
+-- 2a. HORIZONTE DE ALERTA DE VENCIMENTO
+--
+-- A metrologia fecha o MÊS, não o dia: o que interessa na segunda-feira
+-- não é "vence em 15 dias", é "o que ainda tenho para resolver até o fim
+-- do mês que vem". Com 'alerta_vencimento_proximo_mes' ligado (padrão),
+-- tudo que vence até o último dia do próximo mês já entra em âmbar —
+-- painel, lista de calibração, contador da aba e relatórios, todos com o
+-- mesmo horizonte, porque todos leem esta função.
+--
+-- Desligando a chave, volta a valer a janela em dias
+-- ('dias_proximo_vencimento'), que continua sendo o comportamento antigo.
+-- ---------------------------------------------------------------------
+create or replace function public.limite_alerta_vencimento()
+returns date language sql stable security definer set search_path = public as $$
+  select case
+    when public.cfg_bool('alerta_vencimento_proximo_mes', true)
+      then (date_trunc('month', current_date) + interval '2 months' - interval '1 day')::date
+    else current_date + public.cfg_int('dias_proximo_vencimento', 15)
+  end
+$$;
+
+-- ---------------------------------------------------------------------
+-- 2b. E-MAIL DO RESPONSÁVEL POR SETOR
+--     Quem cobra a devolução de um instrumento emprestado não é o
+--     sistema: é o responsável pelo setor. Isto guarda para onde
+--     escrever. Só administrador grava (RPC salvar_email_setor);
+--     todo mundo lê, porque o botão de notificar também é do
+--     metrologista.
+-- ---------------------------------------------------------------------
+create table if not exists public.setores_email (
+  setor                text primary key,
+  email                text not null
+                       check (email ~* '^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$'),
+  responsavel          text,
+  atualizado_em        timestamptz not null default now(),
+  atualizado_por_email text
+);
+
 -- ---------------------------------------------------------------------
 -- 3. FAMÍLIAS E PERIODICIDADE
 -- ---------------------------------------------------------------------
@@ -108,19 +186,30 @@ create table if not exists public.instrumentos (
   id                     uuid primary key default gen_random_uuid(),
   tag                    text not null unique,
   familia_id             uuid not null references public.familias(id) on delete restrict,
+  -- Classificação do instrumento. TMMDE é medição de uso, com todo o
+  -- controle de validade. REFERENCIA é padrão de aferição: cadastro
+  -- enxuto, sem exigência de calibração periódica.
   tipo                   text not null check (tipo in ('TMMDE','REFERENCIA')),
   fabricante             text,
   descricao              text not null check (char_length(btrim(descricao)) >= 2),
   resolucao              text,
   num_serie              text,
+  observacoes            text,      -- campo livre; o principal da referência
   nota_fiscal            text,
   pedido_compra          text,
+  -- Pedido associado na SOLICITAÇÃO da calibração. Copiado para a
+  -- calibração e zerado quando ela é registrada.
+  pedido_calibracao      text,
   data_entrada           date not null,
   standby                boolean not null default false,
   -- 1ª movimentação pós-standby. NULL + standby = relógio de validade pausado.
   data_inicio_relogio    timestamptz,
   condicao_fisica        text not null default 'ativo' check (condicao_fisica in ('ativo','inativo')),
-  motivo_inativo         text,      -- sucateado / vago / nao_entregue / danificado
+  -- Texto livre alimentado por config.motivos_inativacao: sucateado,
+  -- vago, não entregue, danificado, não encontrado, necessário
+  -- manutenção, outros. Lista aberta de propósito — a metrologia
+  -- acrescenta o que a realidade dela pedir, sem migração de banco.
+  motivo_inativo         text,
   justificativa_inativo  text,
   localizacao_normal     text,
   status_workflow        text not null default 'descalibrado'
@@ -194,6 +283,17 @@ create index if not exists doc_instr_idx on public.documentos (instrumento_id);
 
 -- ---------------------------------------------------------------------
 -- 8. INSPEÇÕES VISUAIS (recebimento)
+--
+-- `momento` separa duas coisas que moram na mesma tabela porque as duas
+-- são "uma foto com um texto", mas que contam fatos diferentes:
+--   'recebimento' — a inspeção de entrada, feita no dia em que o
+--                   instrumento chegou. É prova do estado em que ele foi
+--                   recebido.
+--   'posterior'   — a foto anexada depois, para um instrumento que entrou
+--                   sem ela (importação em massa, acervo antigo). Não é
+--                   inspeção de entrada e não pode ser lida como se
+--                   fosse: quem confere o inventário precisa saber se a
+--                   foto mostra o instrumento no recebimento ou hoje.
 -- ---------------------------------------------------------------------
 create table if not exists public.inspecoes (
   id             uuid primary key default gen_random_uuid(),
@@ -201,8 +301,10 @@ create table if not exists public.inspecoes (
   foto_path      text,
   laudo          text,
   comentario     text,
+  momento        text not null default 'recebimento',
   criado_por_email text,
-  criado_em      timestamptz not null default now()
+  criado_em      timestamptz not null default now(),
+  constraint insp_momento_ok check (momento in ('recebimento','posterior'))
 );
 create index if not exists insp_instr_idx on public.inspecoes (instrumento_id);
 
@@ -251,15 +353,31 @@ end $$;
 --     Prefixo: TMMDE -> 'P-'  ·  REFERENCIA -> 'PR-'
 --     Formato: {prefixo}{codigo_familia}-{sequencial 2 dígitos}
 --     Sequencial independente por (família, tipo).
---     Deriva do MAIOR sufixo existente, não de COUNT(*): apagar um
---     instrumento não pode fazer a próxima tag repetir uma antiga.
+--
+--     Devolve o PRIMEIRO número LIVRE, e não o maior + 1: a numeração
+--     real tem buracos de instrumentos sucateados ao longo dos anos
+--     (uma família com a 06 e nada de 01 a 05 é o caso comum), e não
+--     reaproveitá-los empurraria a numeração para sempre.
+--
+--     Reaproveitar buraco exige um cuidado que MAX+1 dispensava: o
+--     número livre AQUI pode estar colado num instrumento que ninguém
+--     cadastrou ainda. O que protege contra isso não é mais o cálculo,
+--     e sim a confirmação humana — a tela de cadastro avulso exige que
+--     alguém confirme a tag antes de gravar, e a importação em massa
+--     traz a etiqueta declarada na planilha.
 -- ---------------------------------------------------------------------
-create or replace function public.gerar_tag(p_familia_id uuid, p_tipo text)
-returns text language plpgsql stable security definer set search_path = public as $$
+
+-- 10.1 As N primeiras tags livres da família+classificação, em ordem.
+--      Alimenta o diálogo de confirmação do cadastro avulso.
+create or replace function public.tags_livres(
+  p_familia_id uuid,
+  p_tipo       text,
+  p_qtd        int default 5
+) returns text[] language plpgsql stable security definer set search_path = public as $$
 declare
   v_codigo  text;
   v_prefixo text;
-  v_seq     int;
+  v_qtd     int := greatest(coalesce(p_qtd, 1), 1);
 begin
   select codigo into v_codigo from public.familias where id = p_familia_id;
   if v_codigo is null then
@@ -271,23 +389,42 @@ begin
 
   v_prefixo := case p_tipo when 'TMMDE' then 'P-' else 'PR-' end;
 
-  select coalesce(max((regexp_match(tag, '-([0-9]+)$'))[1]::int), 0) + 1
-    into v_seq
-    from public.instrumentos
-   where familia_id = p_familia_id and tipo = p_tipo;
-
-  return v_prefixo || v_codigo || '-' || lpad(v_seq::text, 2, '0');
+  -- Qualquer tag da família+classificação conta como ocupada, mesmo se
+  -- estiver fora do padrão: na dúvida, não oferecer o número.
+  return array(
+    with usados as (
+      select (regexp_match(tag, '-([0-9]+)$'))[1]::int as n
+        from public.instrumentos
+       where familia_id = p_familia_id and tipo = p_tipo and tag ~ '-[0-9]+$'
+    )
+    select v_prefixo || v_codigo || '-' || lpad(g.s::text, 2, '0')
+      from generate_series(1, (select coalesce(max(n), 0) from usados) + v_qtd) as g(s)
+     where not exists (select 1 from usados where usados.n = g.s)
+     order by g.s
+     limit v_qtd
+  );
 end $$;
+
+-- 10.2 A próxima tag é a primeira livre. Delega para não existirem duas
+--      implementações da mesma regra, livres para divergir.
+create or replace function public.gerar_tag(p_familia_id uuid, p_tipo text)
+returns text language sql stable security definer set search_path = public as $$
+  select (public.tags_livres(p_familia_id, p_tipo, 1))[1];
+$$;
 
 -- ---------------------------------------------------------------------
 -- 11. MOTOR DE PRÓXIMA CALIBRAÇÃO
 --     Regras:
+--       · classificação REFERENCIA -> NULL (padrão de aferição não tem
+--         exigência de calibração periódica neste controle)
 --       · standby com relógio pausado (data_inicio_relogio NULL) -> NULL
 --         (validade indefinida enquanto o instrumento não for usado)
 --       · base = maior entre data_calibracao e data_inicio_relogio
 --       · família simples      -> base + periodicidade_meses
 --       · família customizada  -> fase vigente conforme a IDADE do
 --         instrumento na âncora da fase (entrada ou 1ª calibração)
+--       · por fim, se 'vencimento_fim_do_mes' estiver ligado, a data
+--         é empurrada para o último dia do mês de vencimento
 -- ---------------------------------------------------------------------
 create or replace function public.calcular_data_proxima(
   p_instrumento_id uuid,
@@ -302,11 +439,17 @@ declare
   v_ancora_data date;
   v_idade       int;
   v_intervalo   int;
+  v_proxima     date;
   r             record;
 begin
   select * into i from public.instrumentos where id = p_instrumento_id;
   if not found then raise exception 'Instrumento não encontrado.'; end if;
   select * into f from public.familias where id = i.familia_id;
+
+  -- Padrão de referência: sem controle de validade. Guardar uma data de
+  -- vencimento aqui faria a view classificá-lo como descalibrado e ele
+  -- entraria na fila de trabalho da metrologia sem precisar.
+  if i.tipo = 'REFERENCIA' then return null; end if;
 
   -- Relógio pausado: a calibração não expira enquanto o instrumento
   -- estiver guardado sem uso.
@@ -324,38 +467,49 @@ begin
     v_base := i.data_inicio_relogio::date;
   end if;
 
-  if not f.periodicidade_customizada then
-    return v_base + (f.periodicidade_meses || ' months')::interval;
-  end if;
+  if f.periodicidade_customizada then
+    select ancora into v_ancora_tipo
+      from public.periodicidade_fases
+     where familia_id = f.id order by ordem limit 1;
+    v_ancora_tipo := coalesce(v_ancora_tipo, 'entrada');
 
-  select ancora into v_ancora_tipo
-    from public.periodicidade_fases
-   where familia_id = f.id order by ordem limit 1;
-  v_ancora_tipo := coalesce(v_ancora_tipo, 'entrada');
-
-  if v_ancora_tipo = 'primeira_calibracao' then
-    select min(data_calibracao) into v_ancora_data
-      from public.calibracoes where instrumento_id = i.id;
-    v_ancora_data := coalesce(v_ancora_data, p_data_calibracao);
-  else
-    v_ancora_data := i.data_entrada;
-  end if;
-
-  v_idade := (extract(year  from age(v_base, v_ancora_data)) * 12
-            + extract(month from age(v_base, v_ancora_data)))::int;
-
-  for r in
-    select * from public.periodicidade_fases where familia_id = f.id order by ordem
-  loop
-    if r.vigencia_ate_meses is null or v_idade < r.vigencia_ate_meses then
-      v_intervalo := r.intervalo_meses;
-      exit;
+    if v_ancora_tipo = 'primeira_calibracao' then
+      select min(data_calibracao) into v_ancora_data
+        from public.calibracoes where instrumento_id = i.id;
+      v_ancora_data := coalesce(v_ancora_data, p_data_calibracao);
+    else
+      v_ancora_data := i.data_entrada;
     end if;
-    v_intervalo := r.intervalo_meses;   -- guarda a última como fallback
-  end loop;
+
+    v_idade := (extract(year  from age(v_base, v_ancora_data)) * 12
+              + extract(month from age(v_base, v_ancora_data)))::int;
+
+    for r in
+      select * from public.periodicidade_fases where familia_id = f.id order by ordem
+    loop
+      if r.vigencia_ate_meses is null or v_idade < r.vigencia_ate_meses then
+        v_intervalo := r.intervalo_meses;
+        exit;
+      end if;
+      v_intervalo := r.intervalo_meses;   -- guarda a última como fallback
+    end loop;
+  end if;
 
   v_intervalo := coalesce(v_intervalo, f.periodicidade_meses);
-  return v_base + (v_intervalo || ' months')::interval;
+  v_proxima   := (v_base + (v_intervalo || ' months')::interval)::date;
+
+  -- Controle mensal de vencimentos: a metrologia fecha o mês, não o dia.
+  -- Calibrado em 20/08/2025 com periodicidade de 12 meses vence em
+  -- 31/08/2026, e não em 20/08/2026 — o instrumento continua válido
+  -- até o fim do mês em que a calibração cai.
+  --
+  -- date_trunc + 1 mês - 1 dia acerta fevereiro e ano bissexto sozinho;
+  -- somar 30 dias, não.
+  if public.cfg_bool('vencimento_fim_do_mes', true) then
+    v_proxima := (date_trunc('month', v_proxima) + interval '1 month' - interval '1 day')::date;
+  end if;
+
+  return v_proxima;
 end $$;
 
 -- Gatilho: data_proxima nunca é escolhida pelo cliente.
@@ -500,42 +654,77 @@ create or replace function public.criar_instrumento_completo(
 ) returns public.instrumentos
 language plpgsql security definer set search_path = public as $$
 declare
-  v_id   uuid;
-  v_tag  text;
-  v_fam  uuid := (p_instrumento->>'familia_id')::uuid;
-  v_tipo text := p_instrumento->>'tipo';
-  v_row  public.instrumentos%rowtype;
+  v_id      uuid;
+  v_tag     text;
+  v_codigo  text;
+  v_prefixo text;
+  v_fam     uuid := (p_instrumento->>'familia_id')::uuid;
+  v_tipo    text := p_instrumento->>'tipo';
+  v_row     public.instrumentos%rowtype;
 begin
   if not public.sou_ativo() then raise exception 'Usuário sem permissão.'; end if;
 
-  v_tag := public.gerar_tag(v_fam, v_tipo);
+  -- Serializa por família+classificação: entre escolher o número livre e
+  -- gravar existe uma janela, e ela é fácil de acertar quando dois
+  -- usuários cadastram na mesma família ao mesmo tempo.
+  perform pg_advisory_xact_lock(hashtext(v_fam::text || coalesce(v_tipo,'')));
+
+  -- A tag pode vir declarada (importação da etiqueta física, ou a tela
+  -- de cadastro com a tag já confirmada por alguém). Sem ela, o servidor
+  -- escolhe a primeira livre, como sempre fez.
+  v_tag := upper(btrim(coalesce(p_instrumento->>'tag','')));
+
+  if v_tag = '' then
+    v_tag := public.gerar_tag(v_fam, v_tipo);
+  else
+    if v_tipo not in ('TMMDE','REFERENCIA') then
+      raise exception 'Tipo inválido: %', v_tipo;
+    end if;
+    select codigo into v_codigo from public.familias where id = v_fam;
+    if v_codigo is null then
+      raise exception 'Família não encontrada.';
+    end if;
+    v_prefixo := case v_tipo when 'TMMDE' then 'P-' else 'PR-' end;
+
+    -- Tag que não descreve a própria família envenena o cálculo do
+    -- próximo número livre dali em diante. Recusar é mais barato que
+    -- descobrir depois, com o acervo já migrado.
+    if v_tag !~ ('^' || v_prefixo || v_codigo || '-[0-9]{2,}$') then
+      raise exception 'Tag % não confere com a família % e a classificação % (esperado %-NN).',
+        v_tag, v_codigo, v_tipo, v_prefixo || v_codigo;
+    end if;
+  end if;
 
   insert into public.instrumentos (
     tag, familia_id, tipo, fabricante, descricao, resolucao, num_serie,
-    nota_fiscal, pedido_compra, data_entrada, standby, localizacao_normal, origem,
-    status_workflow
+    observacoes, nota_fiscal, pedido_compra, data_entrada, standby,
+    localizacao_normal, origem, status_workflow
   ) values (
     v_tag, v_fam, v_tipo,
     nullif(btrim(coalesce(p_instrumento->>'fabricante','')),''),
     p_instrumento->>'descricao',
     nullif(btrim(coalesce(p_instrumento->>'resolucao','')),''),
     nullif(btrim(coalesce(p_instrumento->>'num_serie','')),''),
+    nullif(btrim(coalesce(p_instrumento->>'observacoes','')),''),
     nullif(btrim(coalesce(p_instrumento->>'nota_fiscal','')),''),
     nullif(btrim(coalesce(p_instrumento->>'pedido_compra','')),''),
     (p_instrumento->>'data_entrada')::date,
-    coalesce((p_instrumento->>'standby')::boolean, false),
+    -- Standby é mecânica de validade de calibração: não existe para
+    -- padrão de referência, mesmo que a tela mande true por engano.
+    (v_tipo = 'TMMDE' and coalesce((p_instrumento->>'standby')::boolean, false)),
     nullif(btrim(coalesce(p_instrumento->>'localizacao_normal','')),''),
     coalesce(p_instrumento->>'origem','avulso'),
     'descalibrado'
   ) returning id into v_id;
 
   if p_inspecao is not null and p_inspecao <> 'null'::jsonb then
-    insert into public.inspecoes (instrumento_id, foto_path, laudo, comentario, criado_por_email)
+    insert into public.inspecoes (instrumento_id, foto_path, laudo, comentario,
+                                  momento, criado_por_email)
     values (v_id,
             nullif(btrim(coalesce(p_inspecao->>'foto_path','')),''),
             nullif(btrim(coalesce(p_inspecao->>'laudo','')),''),
             nullif(btrim(coalesce(p_inspecao->>'comentario','')),''),
-            public.meu_email());
+            'recebimento', public.meu_email());
   end if;
 
   if p_calibracao is not null and p_calibracao <> 'null'::jsonb
@@ -563,21 +752,55 @@ create or replace function public.registrar_calibracao(
   p_dados jsonb
 ) returns public.calibracoes
 language plpgsql security definer set search_path = public as $$
-declare v_row public.calibracoes%rowtype;
+declare
+  v_row    public.calibracoes%rowtype;
+  v_cond   text;
+  v_tag    text;
+  v_pedido text;
+  v_cert   text := nullif(btrim(coalesce(p_dados->>'certificado_path','')),'');
 begin
   if not public.sou_ativo() then raise exception 'Usuário sem permissão.'; end if;
+
+  select condicao_fisica, tag, nullif(btrim(coalesce(pedido_calibracao,'')),'')
+    into v_cond, v_tag, v_pedido
+    from public.instrumentos where id = p_instrumento_id;
+  if v_cond is null then raise exception 'Instrumento não encontrado.'; end if;
+
+  -- Calibração sem certificado é afirmação sem prova: é o certificado que
+  -- sustenta a validade numa auditoria. A tela exige o anexo antes de
+  -- enviar; aqui a exigência é de verdade.
+  if v_cert is null then
+    raise exception 'Anexe o certificado de calibração de % para registrar a calibração.', v_tag;
+  end if;
+
+  -- Instrumento inativo está fora do fluxo: não encontrado, em
+  -- manutenção, sucateado. Calibrar um deles seria registrar um serviço
+  -- em cima de um instrumento que a metrologia declarou indisponível.
+  if v_cond = 'inativo' then
+    raise exception 'O instrumento % está inativo. Reative-o no Inventário antes de registrar a calibração.', v_tag;
+  end if;
+
+  -- O pedido de compra é perguntado na SOLICITAÇÃO da calibração e
+  -- guardado no instrumento até aqui. Ele é a fonte da verdade; o que
+  -- veio da tela só entra quando não houve solicitação registrada.
+  v_pedido := coalesce(v_pedido, nullif(btrim(coalesce(p_dados->>'pedidos_associados','')),''));
 
   insert into public.calibracoes (
     instrumento_id, data_calibracao, certificado_path, pedidos_associados,
     obs_metrologista, laudo_path, standby_apos
   ) values (
     p_instrumento_id, (p_dados->>'data_calibracao')::date,
-    nullif(btrim(coalesce(p_dados->>'certificado_path','')),''),
-    nullif(btrim(coalesce(p_dados->>'pedidos_associados','')),''),
+    v_cert,
+    v_pedido,
     nullif(btrim(coalesce(p_dados->>'obs_metrologista','')),''),
     nullif(btrim(coalesce(p_dados->>'laudo_path','')),''),
     coalesce((p_dados->>'standby_apos')::boolean, false)
   ) returning * into v_row;
+
+  -- Ciclo fechado: o pedido acompanhou a solicitação até o certificado
+  -- e não deve reaparecer na próxima calibração deste instrumento.
+  update public.instrumentos set pedido_calibracao = null
+   where id = p_instrumento_id and pedido_calibracao is not null;
 
   return v_row;
 end $$;
@@ -618,18 +841,66 @@ begin
   end if;
 end $$;
 
--- 13.4 Inativar / reativar (auditada, justificativa obrigatória, só admin)
+-- 13.4 Inativar / reativar (auditada, justificativa obrigatória)
+--
+-- Quem inativa é a METROLOGIA, não a administração do sistema: é o
+-- metrologista que abre a gaveta, não encontra o instrumento e precisa
+-- registrar isso na hora. Exigir um administrador para essa operação não
+-- protegia nada — só adiava o registro, e inventário que se registra
+-- depois é inventário que não se registra. O que protege de verdade é o
+-- que continua valendo: justificativa obrigatória, motivo obrigatório e
+-- tudo na trilha de auditoria com e-mail e data.
+--
+-- Apagar instrumento, esse sim, continua sendo só do administrador —
+-- inativar preserva o histórico, apagar destrói.
+--
+-- Duas travas, pelos motivos de sempre — o banco decide, a tela só avisa:
+--
+--   · EMPRÉSTIMO EM ABERTO. Inativar um instrumento que está na mão de
+--     outro setor é declarar segregado o que ninguém segregou. Primeiro a
+--     devolução, depois a inativação.
+--
+--   · CALIBRAÇÃO EM CURSO. 'solicitado' e 'em calibração externa' são
+--     estados de trabalho em andamento: existe pedido aberto e, quase
+--     sempre, o instrumento está no laboratório. Inativar aqui abandona a
+--     solicitação no meio, sem cancelá-la. Volte para descalibrado (o que
+--     também desvincula o pedido) e então inative.
+--
+-- Padrão de referência não participa do fluxo de calibração, então a
+-- segunda trava não se aplica a ele — mas a do empréstimo, sim.
 create or replace function public.inativar_instrumento(
   p_instrumento_id uuid,
   p_motivo text,
   p_justificativa text
 ) returns void language plpgsql security definer set search_path = public as $$
+declare
+  v_tag    text;
+  v_tipo   text;
+  v_status text;
+  v_com    text;
 begin
-  if not public.sou_admin() then
-    raise exception 'Somente administradores podem inativar instrumentos.';
-  end if;
+  if not public.sou_ativo() then raise exception 'Usuário sem permissão.'; end if;
   if coalesce(btrim(p_justificativa),'') = '' then
     raise exception 'Informe a justificativa da inativação.';
+  end if;
+
+  select tag, tipo, status_workflow into v_tag, v_tipo, v_status
+    from public.instrumentos where id = p_instrumento_id;
+  if v_tag is null then raise exception 'Instrumento não encontrado.'; end if;
+
+  select responsavel || ' (' || setor || ')' into v_com
+    from public.movimentacoes
+   where instrumento_id = p_instrumento_id and data_retorno is null
+   order by data_saida desc limit 1;
+
+  if v_com is not null then
+    raise exception 'O instrumento % está emprestado para %. Registre a devolução antes de inativar.',
+      v_tag, v_com;
+  end if;
+
+  if v_tipo <> 'REFERENCIA' and v_status not in ('calibrado','descalibrado') then
+    raise exception 'O instrumento % está com a calibração em andamento ("%"). Só instrumentos calibrados ou descalibrados podem ser inativados — encerre ou cancele a solicitação primeiro.',
+      v_tag, v_status;
   end if;
 
   perform set_config('app.justificativa', p_justificativa, true);
@@ -646,9 +917,7 @@ create or replace function public.reativar_instrumento(
   p_justificativa text
 ) returns void language plpgsql security definer set search_path = public as $$
 begin
-  if not public.sou_admin() then
-    raise exception 'Somente administradores podem reativar instrumentos.';
-  end if;
+  if not public.sou_ativo() then raise exception 'Usuário sem permissão.'; end if;
   if coalesce(btrim(p_justificativa),'') = '' then
     raise exception 'Informe a justificativa da reativação.';
   end if;
@@ -663,16 +932,262 @@ begin
 end $$;
 
 -- 13.5 Mudar status de workflow (solicitado / em calibração externa / descalibrado)
+--
+-- A assinatura ganhou p_pedido. Duas versões coexistindo deixariam o
+-- PostgREST com chamada ambígua, por isso a antiga sai antes.
+drop function if exists public.definir_status_workflow(uuid, text, text);
+
 create or replace function public.definir_status_workflow(
   p_instrumento_id uuid,
   p_status text,
-  p_justificativa text default null
+  p_justificativa text default null,
+  p_pedido text default null
 ) returns void language plpgsql security definer set search_path = public as $$
+declare
+  v_cond   text;
+  v_tag    text;
+  v_atual  text;
+  v_pedido text := nullif(btrim(coalesce(p_pedido,'')),'');
 begin
   if not public.sou_ativo() then raise exception 'Usuário sem permissão.'; end if;
   if p_status not in ('calibrado','descalibrado','solicitado','em_calibracao_externa') then
     raise exception 'Status inválido: %', p_status;
   end if;
+
+  select condicao_fisica, tag, pedido_calibracao into v_cond, v_tag, v_atual
+    from public.instrumentos where id = p_instrumento_id;
+  if v_cond is null then raise exception 'Instrumento não encontrado.'; end if;
+
+  -- A rastreabilidade da solicitação é obrigatória: é ela que liga o
+  -- instrumento ao pedido do serviço e viaja até o certificado. Perguntada
+  -- no fim, quando o serviço já acabou, o campo passava em branco — e a
+  -- calibração ficava sem nenhuma amarra documental.
+  if p_status = 'solicitado'
+     and coalesce(v_pedido, nullif(btrim(coalesce(v_atual,'')),'')) is null then
+    raise exception 'Informe a rastreabilidade da solicitação de calibração de %.', v_tag;
+  end if;
+
+  -- Instrumento inativado pode estar não encontrado, em manutenção ou
+  -- na sucata. Solicitar calibração dele não quer dizer nada — a tela
+  -- esconde os botões, e aqui a trava é de verdade.
+  if v_cond = 'inativo' then
+    raise exception 'O instrumento % está inativo. Reative-o no Inventário antes de mudar a situação de calibração.', v_tag;
+  end if;
+
   perform set_config('app.justificativa', coalesce(p_justificativa,''), true);
-  update public.instrumentos set status_workflow = p_status where id = p_instrumento_id;
+
+  update public.instrumentos
+     set status_workflow   = p_status,
+         -- O pedido de compra entra na SOLICITAÇÃO e sai quando o
+         -- instrumento volta para descalibrado (solicitação abortada).
+         -- Enviar para o laboratório não mexe: é o mesmo pedido.
+         pedido_calibracao = case
+           when p_status = 'solicitado'
+             then coalesce(v_pedido, pedido_calibracao)
+           when p_status = 'descalibrado' then null
+           else pedido_calibracao
+         end
+   where id = p_instrumento_id;
+end $$;
+
+-- ---------------------------------------------------------------------
+-- 13.6 REMOVER (ou SUBSTITUIR) UM ARQUIVO DA PASTA DO INSTRUMENTO
+--
+-- O caso que existe de verdade: o certificado do P-PAQ-03 foi anexado na
+-- calibração do P-PAQ-08. O arquivo errado precisa sair — e o que a
+-- metrologia perde se ele simplesmente sumir é a explicação de por que
+-- sumiu. Daí a justificativa obrigatória: o arquivo vai embora, o
+-- registro de que ele existiu e foi retirado fica para sempre na trilha.
+--
+-- SUBSTITUIR é o caminho preferido, e não um extra: anexar o arquivo
+-- certo no lugar do errado resolve o engano sem deixar a calibração sem
+-- prova. Remover sem substituto é legítimo (o arquivo pode não ter nada
+-- a ver com este instrumento), mas deixa um registro de calibração sem
+-- certificado — o oposto do que registrar_calibracao exige na entrada.
+-- A tela avisa disso antes de confirmar.
+--
+-- Só ADMINISTRADOR, e não por hierarquia: a política de DELETE do
+-- Storage (02_rls.sql) já exige admin. Se a RPC aceitasse metrologista,
+-- o banco perderia a referência do arquivo e o arquivo continuaria lá —
+-- o pior dos dois mundos.
+--
+-- p_origem diz em que tabela mexer; vem da coluna `origem` de
+-- vw_arquivos, então a tela nunca precisa saber onde cada caminho mora.
+-- ---------------------------------------------------------------------
+create or replace function public.remover_arquivo(
+  p_origem         text,
+  p_registro_id    uuid,
+  p_justificativa  text,
+  p_substituto     text default null      -- null = remover; caminho = substituir
+) returns uuid language plpgsql security definer set search_path = public as $$
+declare
+  v_instr  uuid;
+  v_atual  text;
+  v_rotulo text;
+  v_tipo_mov text;
+  v_momento  text;
+  v_laudo    text;
+  v_novo   text := nullif(btrim(coalesce(p_substituto,'')),'');
+begin
+  if not public.sou_admin() then
+    raise exception 'Somente administradores podem remover arquivos do acervo.';
+  end if;
+  if char_length(btrim(coalesce(p_justificativa,''))) < 10 then
+    raise exception 'Informe a justificativa da remoção (mínimo de 10 caracteres).';
+  end if;
+
+  if p_origem = 'calibracao_certificado' then
+    select instrumento_id, certificado_path into v_instr, v_atual
+      from public.calibracoes where id = p_registro_id;
+    v_rotulo := 'Certificado de calibração';
+    update public.calibracoes set certificado_path = v_novo where id = p_registro_id;
+
+  elsif p_origem = 'calibracao_laudo' then
+    select instrumento_id, laudo_path into v_instr, v_atual
+      from public.calibracoes where id = p_registro_id;
+    v_rotulo := 'Laudo da calibração';
+    update public.calibracoes set laudo_path = v_novo where id = p_registro_id;
+
+  elsif p_origem = 'inspecao_foto' then
+    select instrumento_id, foto_path, momento, coalesce(btrim(laudo),'')
+      into v_instr, v_atual, v_momento, v_laudo
+      from public.inspecoes where id = p_registro_id;
+    v_rotulo := 'Foto do instrumento';
+    -- Foto anexada depois é só uma foto: tirada ela, não sobra registro
+    -- nenhum, e a linha vazia apareceria no histórico como uma inspeção
+    -- que nunca houve. A inspeção DE RECEBIMENTO é outra coisa — o laudo
+    -- de entrada continua valendo mesmo sem a imagem, então ela fica.
+    if v_novo is null and v_momento = 'posterior' and v_laudo = '' then
+      delete from public.inspecoes where id = p_registro_id;
+    else
+      update public.inspecoes set foto_path = v_novo where id = p_registro_id;
+    end if;
+
+  elsif p_origem = 'movimentacao_termo' then
+    select instrumento_id, termo_path, tipo into v_instr, v_atual, v_tipo_mov
+      from public.movimentacoes where id = p_registro_id;
+    -- Posse e externo não existem sem termo assinado (constraint
+    -- termo_obrigatorio). Deixar o UPDATE bater na constraint devolveria
+    -- um erro de banco ilegível; a regra é dita aqui, com nome.
+    if v_tipo_mov in ('posse','externo') and v_novo is null then
+      raise exception 'O termo de responsabilidade de um empréstimo do tipo "%" não pode ser removido: anexe o termo correto no lugar.', v_tipo_mov;
+    end if;
+    v_rotulo := 'Termo de responsabilidade';
+    update public.movimentacoes set termo_path = v_novo where id = p_registro_id;
+
+  elsif p_origem = 'documento' then
+    select instrumento_id, arquivo_path into v_instr, v_atual
+      from public.documentos where id = p_registro_id;
+    v_rotulo := 'Documento anexado';
+    if v_novo is null then
+      delete from public.documentos where id = p_registro_id;
+    else
+      update public.documentos set arquivo_path = v_novo where id = p_registro_id;
+    end if;
+
+  else
+    raise exception 'Origem de arquivo desconhecida: %', p_origem;
+  end if;
+
+  if v_atual is null then
+    raise exception 'Arquivo não encontrado. Ele pode já ter sido removido por outra pessoa — recarregue a pasta.';
+  end if;
+  -- A auditoria é sempre presa a um instrumento: sem ele não há onde
+  -- registrar a remoção, e remoção sem registro é o que esta função
+  -- existe para impedir.
+  if v_instr is null then
+    raise exception 'Este arquivo não está vinculado a nenhum instrumento e não pode ser removido por aqui.';
+  end if;
+
+  perform public.auditar(
+    'instrumentos', v_instr,
+    case when v_novo is null then 'arquivo_removido' else 'arquivo_substituido' end,
+    v_rotulo || ' · ' || regexp_replace(v_atual, '^.*/', ''),
+    case when v_novo is null then null else regexp_replace(v_novo, '^.*/', '') end,
+    p_justificativa);
+
+  -- Devolve o instrumento para a tela recarregar a pasta certa.
+  return v_instr;
+end $$;
+
+-- ---------------------------------------------------------------------
+-- 13.7 ANEXAR FOTO A UM INSTRUMENTO JÁ CADASTRADO
+--
+-- A foto é obrigatória no cadastro pela tela — e não é, nem pode ser, na
+-- IMPORTAÇÃO EM MASSA: uma planilha com duzentas linhas não carrega
+-- duzentas imagens. O acervo antigo entra assim, e entra sem foto. Sem um
+-- caminho para anexá-la depois, a única saída seria recadastrar o
+-- instrumento, o que trocaria a tag e jogaria fora o histórico.
+--
+-- A foto entra como uma inspeção de momento 'posterior'. Ela NÃO vira
+-- inspeção de recebimento, e a distinção não é preciosismo: a inspeção de
+-- entrada é prova do estado em que o instrumento chegou. Uma foto tirada
+-- hoje, meses depois, mostra o instrumento de hoje. Chamar as duas de
+-- "inspeção visual" faria a linha do tempo afirmar o que ninguém
+-- verificou.
+--
+-- Não há auditoria separada aqui. Anexar não destrói nada, e a própria
+-- linha da inspeção já guarda quem anexou e quando — a mesma informação
+-- em dois lugares viraria duas linhas no histórico para um gesto só.
+-- Remover, sim, é auditado: ali a prova desaparece (13.6).
+-- ---------------------------------------------------------------------
+create or replace function public.anexar_foto_instrumento(
+  p_instrumento_id uuid,
+  p_foto_path      text,
+  p_observacao     text default null
+) returns uuid language plpgsql security definer set search_path = public as $$
+declare
+  v_foto text := nullif(btrim(coalesce(p_foto_path,'')),'');
+  v_tag  text;
+  v_id   uuid;
+begin
+  if not public.sou_ativo() then raise exception 'Usuário sem permissão.'; end if;
+
+  select tag into v_tag from public.instrumentos where id = p_instrumento_id;
+  if v_tag is null then raise exception 'Instrumento não encontrado.'; end if;
+
+  if v_foto is null then
+    raise exception 'Anexe a imagem antes de salvar.';
+  end if;
+
+  insert into public.inspecoes (instrumento_id, foto_path, laudo, momento, criado_por_email)
+  values (p_instrumento_id, v_foto,
+          nullif(btrim(coalesce(p_observacao,'')),''),
+          'posterior', public.meu_email())
+  returning id into v_id;
+
+  return v_id;
+end $$;
+
+-- 13.8 E-mail do responsável pelo setor (cobrança de devolução)
+create or replace function public.salvar_email_setor(
+  p_setor text,
+  p_email text,
+  p_responsavel text default null
+) returns void language plpgsql security definer set search_path = public as $$
+begin
+  if not public.sou_admin() then
+    raise exception 'Somente administradores podem cadastrar e-mails de setor.';
+  end if;
+  if coalesce(btrim(p_setor),'') = '' then
+    raise exception 'Informe o setor.';
+  end if;
+
+  insert into public.setores_email (setor, email, responsavel, atualizado_por_email)
+  values (btrim(p_setor), lower(btrim(p_email)),
+          nullif(btrim(coalesce(p_responsavel,'')),''), public.meu_email())
+  on conflict (setor) do update
+    set email                = excluded.email,
+        responsavel          = excluded.responsavel,
+        atualizado_em        = now(),
+        atualizado_por_email = excluded.atualizado_por_email;
+end $$;
+
+create or replace function public.remover_email_setor(p_setor text)
+returns void language plpgsql security definer set search_path = public as $$
+begin
+  if not public.sou_admin() then
+    raise exception 'Somente administradores podem remover e-mails de setor.';
+  end if;
+  delete from public.setores_email where setor = btrim(p_setor);
 end $$;

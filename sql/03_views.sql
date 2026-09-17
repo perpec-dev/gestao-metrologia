@@ -11,6 +11,13 @@
 -- ---------------------------------------------------------------------
 -- 1. STATUS EFETIVO
 -- ---------------------------------------------------------------------
+-- O `drop` é obrigatório, e não uma precaução: esta view expande `i.*`,
+-- então toda coluna nova em `instrumentos` entra NO MEIO da lista de
+-- colunas da view. `create or replace view` recusa renomear coluna, e o
+-- arquivo falharia com "cannot change name of view column". Nenhuma
+-- outra view depende desta; os grants voltam no fim deste mesmo arquivo.
+drop view if exists public.vw_instrumentos_status;
+
 create or replace view public.vw_instrumentos_status as
 select
   i.*,
@@ -31,6 +38,11 @@ select
   (m.id is not null)           as emprestado,
   coalesce(m.setor, i.localizacao_normal) as localizacao_atual,
   case
+    -- Padrão de referência não tem exigência de calibração periódica:
+    -- ele nunca vence, nunca fica "descalibrado" e não entra na fila de
+    -- trabalho da metrologia. A classificação É a situação dele.
+    when i.tipo = 'REFERENCIA'
+      then 'referencia'
     when i.status_workflow in ('solicitado','em_calibracao_externa')
       then i.status_workflow
     when i.status_workflow = 'descalibrado'
@@ -41,7 +53,12 @@ select
       then 'descalibrado'
     when c.data_proxima < current_date
       then 'descalibrado'
-    when c.data_proxima - current_date <= public.cfg_int('dias_proximo_vencimento', 15)
+    -- Horizonte de alerta: por padrão, tudo que vence até o último dia do
+    -- MÊS QUE VEM. A metrologia fecha o mês, não o dia — e o painel, a
+    -- lista de calibração e o contador da aba passam a falar a mesma
+    -- língua porque todos leem esta mesma função. Ver
+    -- public.limite_alerta_vencimento() em 01_schema.sql.
+    when c.data_proxima <= public.limite_alerta_vencimento()
       then 'proximo_vencimento'
     else 'calibrado'
   end                          as status_efetivo,
@@ -136,6 +153,77 @@ join public.familias f     on f.id = i.familia_id;
 alter view public.vw_emprestimos_historico set (security_invoker = on);
 
 -- ---------------------------------------------------------------------
+-- 2c. ARQUIVOS DO ACERVO  (a "pasta" de cada instrumento)
+--
+-- Os arquivos sempre estiveram no sistema, mas espalhados: o certificado
+-- mora numa coluna de `calibracoes`, o termo numa de `movimentacoes`, a
+-- foto numa de `inspecoes`, e o resto em `documentos`. Para achar "o
+-- certificado do P-PAQ-03" era preciso abrir a ficha e caçar na linha do
+-- tempo. Esta view junta os quatro numa lista só, com tag e tipo, e é o
+-- que a tela Arquivos usa para montar uma pasta por equipamento.
+--
+-- Nada aqui grava: é leitura sobre o que já existe. O caminho no Storage
+-- também passou a ser <tag>/<arquivo>, então a pasta existe dos dois
+-- lados — na tela e no painel do Supabase.
+-- ---------------------------------------------------------------------
+-- As duas últimas colunas — `origem` e `registro_id` — são o endereço do
+-- arquivo: dizem em QUE tabela e em QUE linha aquele caminho está
+-- guardado. Sem elas a tela saberia exibir o arquivo e não saberia
+-- removê-lo, porque o mesmo PDF pode estar numa coluna de calibracoes,
+-- de movimentacoes ou numa linha de documentos. É por esse par que a RPC
+-- remover_arquivo sabe onde mexer.
+create or replace view public.vw_arquivos as
+  select c.instrumento_id, i.tag, i.descricao as instrumento,
+         'certificados'::text as bucket, c.certificado_path as arquivo_path,
+         'Certificado'::text  as tipo,
+         'Certificado · calibração de ' || to_char(c.data_calibracao,'DD/MM/YYYY') as nome,
+         c.criado_em as quando, c.criado_por_email as autor,
+         'calibracao_certificado'::text as origem, c.id as registro_id
+    from public.calibracoes c
+    join public.instrumentos i on i.id = c.instrumento_id
+   where coalesce(btrim(c.certificado_path),'') <> ''
+union all
+  select c.instrumento_id, i.tag, i.descricao,
+         'laudos', c.laudo_path, 'Laudo',
+         'Laudo · calibração de ' || to_char(c.data_calibracao,'DD/MM/YYYY'),
+         c.criado_em, c.criado_por_email,
+         'calibracao_laudo', c.id
+    from public.calibracoes c
+    join public.instrumentos i on i.id = c.instrumento_id
+   where coalesce(btrim(c.laudo_path),'') <> ''
+union all
+  select ins.instrumento_id, i.tag, i.descricao,
+         'fotos', ins.foto_path, 'Foto',
+         coalesce(nullif(btrim(ins.laudo),''),
+                  case when ins.momento = 'posterior' then 'Foto anexada ao cadastro'
+                       else 'Foto do recebimento' end),
+         ins.criado_em, ins.criado_por_email,
+         'inspecao_foto', ins.id
+    from public.inspecoes ins
+    join public.instrumentos i on i.id = ins.instrumento_id
+   where coalesce(btrim(ins.foto_path),'') <> ''
+union all
+  select m.instrumento_id, i.tag, i.descricao,
+         'termos', m.termo_path, 'Termo',
+         'Termo · ' || m.tipo || ' para ' || m.responsavel || ' (' || m.setor || ')',
+         m.data_saida, m.criado_por_email,
+         'movimentacao_termo', m.id
+    from public.movimentacoes m
+    join public.instrumentos i on i.id = m.instrumento_id
+   where coalesce(btrim(m.termo_path),'') <> ''
+union all
+  select d.instrumento_id, i.tag, i.descricao,
+         d.bucket, d.arquivo_path, coalesce(nullif(btrim(d.tipo),''), 'Documento'),
+         coalesce(nullif(btrim(d.nome),''), 'Documento anexado'),
+         d.criado_em, d.criado_por_email,
+         'documento', d.id
+    from public.documentos d
+    join public.instrumentos i on i.id = d.instrumento_id
+   where d.instrumento_id is not null;
+
+alter view public.vw_arquivos set (security_invoker = on);
+
+-- ---------------------------------------------------------------------
 -- 3. LINHA DO TEMPO  (um instrumento, todos os eventos)
 -- ---------------------------------------------------------------------
 create or replace view public.vw_timeline as
@@ -145,18 +233,42 @@ create or replace view public.vw_timeline as
          null::text as arquivo_bucket, null::text as arquivo_path, null::text as autor
     from public.instrumentos i
 union all
+  -- Uma foto anexada meses depois não é a inspeção de recebimento, e o
+  -- histórico não pode dizer que é: a inspeção de entrada prova o estado
+  -- em que o instrumento CHEGOU. Quem importou o acervo em massa e foi
+  -- fotografando instrumento por instrumento depois precisa ler essa
+  -- diferença na linha do tempo, não deduzi-la pela data.
   select ins.instrumento_id, ins.criado_em, 'inspecao',
-         'Inspeção visual',
+         case when ins.momento = 'posterior' then 'Foto do instrumento anexada'
+              else 'Inspeção visual' end,
          concat_ws(' · ', nullif(ins.laudo,''), nullif(ins.comentario,'')),
          'fotos', ins.foto_path, ins.criado_por_email
     from public.inspecoes ins
 union all
+  -- O STANDBY é dito aqui, no evento da calibração em que ele foi
+  -- decidido, e só aqui. Ele era repetido no alto da ficha como tarja e
+  -- como aviso — três lugares dizendo a mesma coisa sobre um estado que
+  -- nasceu de um clique só. Guardar em standby é uma escolha feita AO
+  -- registrar a calibração: é a linha desta calibração que tem de contar
+  -- por que este instrumento não tem data para vencer.
   select c.instrumento_id, c.criado_em, 'calibracao',
          'Calibração realizada em ' || to_char(c.data_calibracao,'DD/MM/YYYY'),
          concat_ws(' · ',
-           case when c.data_proxima is null then 'Sem vencimento (relógio pausado)'
+           -- "Standby", só a palavra. O que ela significa está explicado
+           -- na tela em que se decide guardar o instrumento; repetir a
+           -- explicação em cada linha do histórico é encher de texto uma
+           -- lista feita para ser varrida com o olho.
+           case when c.standby_apos then 'Standby'
+                when c.data_proxima is null then 'Sem data de vencimento'
                 else 'Próxima: ' || to_char(c.data_proxima,'DD/MM/YYYY') end,
-           nullif(c.pedidos_associados,''), nullif(c.obs_metrologista,'')),
+           -- A RASTREABILIDADE não entra aqui: ela nasce na SOLICITAÇÃO
+           -- da calibração e já aparece naquele evento, com a data em que
+           -- o pedido foi aberto. Repeti-la no registro do certificado
+           -- fazia o mesmo número surgir duas vezes na mesma lista, em
+           -- momentos que contam coisas diferentes. A coluna continua
+           -- gravada em calibracoes.pedidos_associados — o vínculo formal
+           -- entre certificado e pedido não se perde.
+           nullif(c.obs_metrologista,'')),
          'certificados', c.certificado_path, c.criado_por_email
     from public.calibracoes c
 union all
@@ -175,8 +287,19 @@ union all
          null, null, coalesce(m.devolvido_por_email, m.criado_por_email)
     from public.movimentacoes m where m.data_retorno is not null
 union all
+  -- O título da linha de auditoria é escrito para quem lê o histórico, e
+  -- não para quem escreveu a tabela: "Alteração: status_workflow" é o
+  -- nome da coluna vazando para a tela. O nome cru continua valendo como
+  -- saída para qualquer campo novo que apareça sem tradução aqui.
   select a.entidade_id, a.criado_em, 'auditoria',
-         'Alteração: ' || a.campo,
+         case a.campo
+           when 'status_workflow'     then 'Situação de calibração alterada'
+           when 'condicao_fisica'     then 'Condição física alterada'
+           when 'arquivo_removido'    then 'Arquivo removido'
+           when 'arquivo_substituido' then 'Arquivo substituído'
+           when 'apagado'             then 'Instrumento apagado'
+           else 'Alteração: ' || a.campo
+         end,
          concat_ws(' · ', coalesce(a.valor_antigo,'—') || ' → ' || coalesce(a.valor_novo,'—'),
                    nullif(a.justificativa,'')),
          null, null, a.usuario_email
@@ -220,7 +343,10 @@ begin
 
   -- 'standby_pausado' só existe para instrumento já calibrado cujo relógio
   -- ainda não partiu; emprestá-lo é justamente o que liga o relógio.
-  if v_status not in ('calibrado','standby_pausado') then
+  -- 'referencia' entra porque o padrão de aferição não tem validade a
+  -- vencer: exigir calibração em dia dele seria exigir uma regra que a
+  -- própria classificação dispensa.
+  if v_status not in ('calibrado','standby_pausado','referencia') then
     raise exception 'O instrumento % não pode sair: situação atual é "%". Só instrumentos calibrados podem ser emprestados.',
       v_tag, v_status;
   end if;
@@ -291,16 +417,23 @@ end $$;
 -- 5. PERMISSÕES DAS VIEWS E DAS RPCs DESTE ARQUIVO
 -- ---------------------------------------------------------------------
 revoke all on public.vw_instrumentos_status, public.vw_emprestimos_abertos,
-              public.vw_emprestimos_historico, public.vw_timeline
+              public.vw_emprestimos_historico, public.vw_timeline,
+              public.vw_arquivos
          from anon, authenticated;
 
 grant select on public.vw_instrumentos_status    to authenticated;
 grant select on public.vw_emprestimos_abertos    to authenticated;
 grant select on public.vw_emprestimos_historico  to authenticated;
 grant select on public.vw_timeline               to authenticated;
+grant select on public.vw_arquivos               to authenticated;
 
 grant execute on function public.registrar_movimentacao(uuid,jsonb)     to authenticated;
 grant execute on function public.registrar_devolucao(uuid,text,text)    to authenticated;
+
+-- Último passo da instalação: recarregar o cache de esquema do PostgREST.
+-- Sem isto, uma função ou view recém-criada pode responder "not found" à
+-- tela por alguns minutos — e parece que a instalação falhou.
+notify pgrst, 'reload schema';
 
 -- =====================================================================
 -- DIAGNÓSTICO — descomente quando algo não bate

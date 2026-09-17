@@ -95,7 +95,9 @@ export function pedirJustificativa({ titulo, texto = '', rotuloOk = 'Salvar', mi
     abrirModal({
       titulo,
       corpo: `
-        ${texto ? `<div class="warn-box w">${texto}</div>` : ''}
+        <!-- 'fixa': este texto diz O QUE está sendo alterado (a família,
+             o instrumento). É contexto da decisão, não dica de tela. -->
+        ${texto ? `<div class="warn-box w fixa">${texto}</div>` : ''}
         <div class="field" id="wJust">
           <label for="fJust">Justificativa<span class="req">*</span></label>
           <textarea id="fJust" placeholder="Explique o motivo desta alteração. Este texto vai para a trilha de auditoria."></textarea>

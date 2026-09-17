@@ -21,6 +21,79 @@ export function chave(s){
     .toLowerCase().replace(/\s+/g,' ').trim();
 }
 
+/* ---- Nome de pessoa -------------------------------------------------
+   O perfil nasce do e-mail: joao@perpec.com.br vira "joao". Escrever
+   "Olá, joao" na primeira tela do dia é o sistema chamando a pessoa pelo
+   login, não pelo nome dela.
+
+   Duas coisas acontecem aqui, e só a primeira é infalível:
+
+     1. CAIXA — "joao amaral" vira "João Amaral", com as partículas em
+        minúscula ("Costa e Silva", "Souza dos Santos") e os compostos de
+        hífen e apóstrofo respeitados ("Ana-Clara", "D'Ávila").
+
+     2. ACENTO — não existe como deduzir acento de um texto sem acento:
+        "sergio" tanto pode ser Sérgio quanto Sergio. O que dá para fazer
+        é uma lista dos primeiros nomes e sobrenomes mais comuns,
+        aplicada SOMENTE quando a palavra chega sem nenhum acento. Nome
+        fora da lista sai como veio, com a caixa corrigida — nunca com um
+        acento inventado.
+
+   O conserto definitivo de qualquer nome é escrevê-lo em
+   Administração › Usuários, e é para isso que aquele campo existe.
+   Acrescente aqui o que a sua equipe usar: a chave é o nome em minúscula
+   e sem acento, o valor é como ele deve aparecer.
+   --------------------------------------------------------------------- */
+const PARTICULAS = new Set(['de','da','do','das','dos','e','di','du','del','della','van','von','y','la']);
+
+const ACENTOS_NOMES = {
+  joao:'João', jose:'José', antonio:'Antônio', sergio:'Sérgio', tercio:'Tércio',
+  marcio:'Márcio', mario:'Mário', fabio:'Fábio', flavio:'Flávio', otavio:'Otávio',
+  luis:'Luís', andre:'André', cesar:'César', cassio:'Cássio', tulio:'Túlio',
+  julio:'Júlio', romulo:'Rômulo', vinicius:'Vinícius', lucio:'Lúcio', helio:'Hélio',
+  elio:'Élio', ricardo:'Ricardo', jonatas:'Jônatas', matheus:'Matheus',
+  sebastiao:'Sebastião', estevao:'Estêvão', cristovao:'Cristóvão', damiao:'Damião',
+  adao:'Adão', fabiola:'Fabíola', junior:'Júnior', natalia:'Natália',
+  patricia:'Patrícia', monica:'Mônica', veronica:'Verônica', angelica:'Angélica',
+  jessica:'Jéssica', leticia:'Letícia', tania:'Tânia', sonia:'Sônia', gloria:'Glória',
+  cintia:'Cíntia', lucia:'Lúcia', marcia:'Márcia', barbara:'Bárbara', heloisa:'Heloísa',
+  luisa:'Luísa', tais:'Taís', thais:'Thaís', silvia:'Sílvia', cassia:'Cássia',
+  virginia:'Virgínia', valeria:'Valéria', rosangela:'Rosângela', angela:'Ângela',
+  otavia:'Otávia', iara:'Iara', vitoria:'Vitória', debora:'Débora', livia:'Lívia',
+  alicia:'Alícia', ana:'Ana', maria:'Maria',
+  // Sobrenomes
+  araujo:'Araújo', goncalves:'Gonçalves', conceicao:'Conceição', assuncao:'Assunção',
+  brandao:'Brandão', simoes:'Simões', nobrega:'Nóbrega', inacio:'Inácio',
+  fatima:'Fátima', gouveia:'Gouveia', queiros:'Queirós', macedo:'Macedo',
+  camara:'Câmara', couto:'Couto', vasconcelos:'Vasconcelos', paiva:'Paiva'
+};
+
+/** true quando a palavra já traz acento ou cedilha — aí a lista não mexe. */
+const temAcento = p => Array.prototype.some.call(p, c => c.charCodeAt(0) > 127);
+
+const capitalizar = p => p ? p.charAt(0).toLocaleUpperCase('pt-BR') + p.slice(1) : p;
+
+export function nomeProprio(nome){
+  const bruto = String(nome || '').trim().replace(/\s+/g, ' ');
+  if (!bruto) return '';
+
+  const partes = bruto.split(' ');
+  return partes.map((p, i) => {
+    const min = p.toLocaleLowerCase('pt-BR');
+    // Partícula nunca é a primeira palavra: "Da Silva" começa nome, "da"
+    // no meio é ligação.
+    if (i > 0 && PARTICULAS.has(min)) return min;
+    if (!temAcento(p) && ACENTOS_NOMES[min]) return ACENTOS_NOMES[min];
+    // Compostos: os dois lados do hífen e do apóstrofo são nomes.
+    return min.split(/([-'’])/)
+              .map(t => /^[-'’]$/.test(t) ? t : capitalizar(t))
+              .join('');
+  }).join(' ');
+}
+
+/** Só o primeiro nome, já normalizado — para saudação e assinatura. */
+export const primeiroNome = nome => nomeProprio(nome).split(' ')[0] || '';
+
 export function uid(){
   if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
   return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {

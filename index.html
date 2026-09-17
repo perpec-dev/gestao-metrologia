@@ -43,7 +43,7 @@
       </p>
     </form>
 
-    <div class="gate-foot" id="rodape">FP-ENG-0018</div>
+    <div class="gate-foot" id="rodape">APP-MET-001</div>
   </div>
 </div>
 
@@ -55,7 +55,7 @@ import { sb, configurado } from './supabase.js';
 import { entrar } from './auth.js';
 import { toast, msgErro, marcarErro } from './utils.js';
 
-document.getElementById('rodape').textContent = CONFIG.DOC_REF;
+document.getElementById('rodape').textContent = CONFIG.APP_REF;
 document.title = 'Entrar — ' + CONFIG.APP_NOME + ' · ' + CONFIG.EMPRESA;
 if (window.LOGO_B64) document.getElementById('logo').src = window.LOGO_B64;
 else document.getElementById('logo').remove();

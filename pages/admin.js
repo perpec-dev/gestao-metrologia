@@ -3,6 +3,7 @@
 
      Usuários   — papel e acesso de cada pessoa
      Parâmetros — as chaves de config que mudam o comportamento do sistema
+     E-mails    — para onde a Metrologia escreve ao cobrar devolução
      Manutenção — apagar em massa, para corrigir e reimportar
      Auditoria  — a trilha, somente leitura
 
@@ -10,18 +11,25 @@
    quem garante é o banco. Toda ação aqui passa por uma RPC que
    verifica sou_admin() de novo.
    ===================================================================== */
-import { esc, fmtDT, toast, msgErro, htmlCarregando, htmlVazio, chave, debounce } from '../utils.js';
-import { listarUsuarios, definirPapel, definirAtivo, listarAuditoria,
+import { esc, fmtDT, toast, msgErro, htmlCarregando, htmlVazio, chave, debounce,
+         nomeProprio } from '../utils.js';
+import { listarUsuarios, definirPapel, definirAtivo, definirNomeUsuario, listarAuditoria,
          listarFamilias, listarInstrumentos, carregarConfig, salvarConfig,
          apagarTodosInstrumentos, apagarInstrumentosDaFamilia,
-         cfg, configFaltando } from '../supabase.js';
+         listarEmailsSetor, salvarEmailSetor, removerEmailSetor,
+         cfg, cfgLista, configFaltando } from '../supabase.js';
 import { souAdmin, meuEmail } from '../auth.js';
 import { abrirModal, confirmar } from '../components/modal.js';
 import { criarTabela } from '../components/tabela.js';
 
 const PARAMETROS = [
+  { chave:'alerta_vencimento_proximo_mes', rotulo:'Alertar até o fim do próximo mês', unidade:'', tipo:'simnao',
+    ajuda:'Com "sim", entra como "próximo do vencimento" tudo que vence até o último dia do MÊS QUE VEM — ' +
+          'o horizonte do controle mensal. Vale para o painel, a lista de calibração, o contador da aba e ' +
+          'os relatórios, todos ao mesmo tempo. Com "não", volta a valer a janela em dias abaixo.' },
   { chave:'dias_proximo_vencimento', rotulo:'Janela de alerta de vencimento', unidade:'dias', tipo:'number',
-    ajuda:'Quantos dias antes do vencimento o instrumento passa a aparecer como "próximo do vencimento" no painel e na lista de calibração.' },
+    ajuda:'Quantos dias antes do vencimento o instrumento passa a aparecer como "próximo do vencimento". ' +
+          'Só é usado quando o alerta até o fim do próximo mês está desligado.' },
   { chave:'prazo_alerta_emprestimo_casual_dias', rotulo:'Prazo do empréstimo casual', unidade:'dias', tipo:'number',
     ajuda:'Passado esse prazo sem devolução, o empréstimo casual vira lembrete no painel.' },
   { chave:'prazo_alerta_emprestimo_externo_dias', rotulo:'Prazo do empréstimo externo', unidade:'dias', tipo:'number',
@@ -29,7 +37,13 @@ const PARAMETROS = [
   { chave:'setores', rotulo:'Setores', unidade:'', tipo:'lista',
     ajuda:'Opções do campo "setor" no empréstimo. Separe por vírgula.' },
   { chave:'motivos_inativacao', rotulo:'Motivos de inativação', unidade:'', tipo:'lista',
-    ajuda:'Opções oferecidas ao inativar um instrumento no inventário. Separe por vírgula.' }
+    ajuda:'Opções oferecidas ao inativar um instrumento no inventário. Separe por vírgula. ' +
+          '"Outros" tem tratamento especial: escolhê-lo obriga a descrever a segregação do instrumento.' },
+  { chave:'vencimento_fim_do_mes', rotulo:'Vencimento no último dia do mês', unidade:'', tipo:'simnao',
+    ajuda:'Com "sim", a validade da calibração vai até o fim do mês de vencimento: ' +
+          'calibrado em 20/08/2025 com periodicidade de 12 meses vence em 31/08/2026, e não em 20/08/2026. ' +
+          'É o que casa com o controle mensal da metrologia. Vale para as PRÓXIMAS calibrações registradas; ' +
+          'as datas já calculadas não mudam sozinhas.' }
 ];
 
 export function destroy(){ tabelaAud = null; }
@@ -49,11 +63,13 @@ export async function render(container){
     <div class="subtabs">
       <button class="subtab sel" data-pane="usuarios">Usuários</button>
       <button class="subtab" data-pane="parametros">Parâmetros</button>
+      <button class="subtab" data-pane="emails">E-mails por setor</button>
       <button class="subtab" data-pane="manutencao">Manutenção</button>
       <button class="subtab" data-pane="auditoria">Auditoria</button>
     </div>
     <section class="pane on" id="pane-usuarios">${htmlCarregando()}</section>
     <section class="pane"    id="pane-parametros"></section>
+    <section class="pane"    id="pane-emails"></section>
     <section class="pane"    id="pane-manutencao"></section>
     <section class="pane"    id="pane-auditoria"></section>`;
 
@@ -66,6 +82,7 @@ export async function render(container){
 
   await abaUsuarios(container.querySelector('#pane-usuarios'));
   await abaParametros(container.querySelector('#pane-parametros'));
+  await abaEmails(container.querySelector('#pane-emails'));
   await abaManutencao(container.querySelector('#pane-manutencao'));
 }
 
@@ -84,8 +101,16 @@ async function abaUsuarios(el){
       <b>Como entra gente nova.</b> O Supabase é quem cria a credencial; esta tela define o que a
       pessoa pode fazer.<br>
       1. No painel do Supabase: <b>Authentication → Users → Add user</b>, com <b>Auto Confirm</b> ligado.<br>
-      2. O perfil aparece aqui sozinho, como <b>metrologista ativo</b>.<br>
-      3. Ajuste o papel abaixo, se for o caso.
+      2. O perfil aparece aqui sozinho, como <b>metrologista ativo</b>, com o nome tirado do e-mail.<br>
+      3. Corrija o <b>nome</b> e ajuste o papel abaixo.
+    </div>
+
+    <div class="warn-box w">
+      <b>O nome escrito aqui é o nome que a pessoa vê.</b> Ele aparece na saudação do painel, no
+      cabeçalho, na assinatura do e-mail de cobrança e no "emitido por" dos relatórios em PDF.
+      Como o perfil nasce do e-mail, ele começa como <code>joao</code> — o sistema arruma a caixa
+      e os acentos que consegue reconhecer, mas <b>acento não se deduz</b>: "sergio" tanto pode ser
+      Sérgio quanto Sergio. Escreva o nome completo, com acento, e acabou a adivinhação.
     </div>
 
     <div class="card">
@@ -94,11 +119,18 @@ async function abaUsuarios(el){
         <span class="right">${usuarios.length} · ${admins} administrador(es)</span>
       </div>
       <div class="card-body">
-        <div class="tbl-wrap"><table class="tbl" style="min-width:760px">
-          <thead><tr><th>Nome</th><th>E-mail</th><th>Papel</th><th>Acesso</th><th></th></tr></thead>
+        <div class="tbl-wrap"><table class="tbl" style="min-width:820px">
+          <thead><tr><th style="width:230px">Nome</th><th>E-mail</th><th>Papel</th>
+                     <th>Acesso</th><th></th></tr></thead>
           <tbody>${usuarios.map(u => `
             <tr class="${u.ativo ? '' : 'inativa'}">
-              <td>${esc(u.nome || '—')}${u.email === meuEmail() ? ' <span class="tag">você</span>' : ''}</td>
+              <td>
+                <input type="text" data-nome="${esc(u.id)}" value="${esc(u.nome || '')}"
+                       placeholder="Nome completo, com acento"
+                       style="width:100%;font-size:13px;padding:6px 9px;border:1px solid var(--border2);
+                              border-radius:var(--r-sm);font-family:inherit">
+                ${u.email === meuEmail() ? '<div style="margin-top:3px"><span class="tag">você</span></div>' : ''}
+              </td>
               <td class="mono" style="font-size:12px">${esc(u.email)}</td>
               <td>
                 <select data-papel="${esc(u.id)}" style="font-size:13px;padding:5px 8px;
@@ -126,10 +158,12 @@ async function abaUsuarios(el){
                ['Receber, cadastrar e importar', 1, 1],
                ['Registrar calibração', 1, 1],
                ['Emprestar e registrar devolução', 1, 1],
+               ['Notificar setor sobre devolução em atraso', 1, 1],
                ['Alterar periodicidade (com justificativa)', 1, 1],
-               ['Inativar / reativar instrumento', 0, 1],
+               ['Inativar / reativar instrumento (com justificativa)', 1, 1],
                ['Apagar instrumentos', 0, 1],
                ['Alterar parâmetros do sistema', 0, 1],
+               ['Cadastrar e-mails por setor', 0, 1],
                ['Gerenciar papéis e acessos', 0, 1]
               ].map(([a,m,ad]) => `
               <tr><td>${esc(a)}</td>
@@ -139,6 +173,34 @@ async function abaUsuarios(el){
         </table></div>
       </div>
     </div>`;
+
+  /* O nome salva ao sair do campo (ou no Enter), sem botão próprio: é um
+     campo só, e um botão "Salvar" por linha encheria a tabela de ações
+     que quase nunca são usadas. A caixa e os acentos conhecidos são
+     normalizados na hora de gravar — quem escreveu "joao amaral" recebe
+     "João Amaral" de volta e vê o que ficou guardado. */
+  el.querySelectorAll('[data-nome]').forEach(inp => {
+    const original = inp.value;
+    const salvar = async () => {
+      const novo = nomeProprio(inp.value);
+      if (novo === original){ inp.value = original; return; }
+      if (novo.length < 3){
+        toast('Escreva o nome completo (mínimo de 3 caracteres).', 'error');
+        inp.value = original; return;
+      }
+      inp.disabled = true;
+      try {
+        await definirNomeUsuario(inp.dataset.nome, novo);
+        toast(`Nome atualizado para ${novo}.`, 'success');
+        await abaUsuarios(el);
+      } catch (e){
+        toast(msgErro(e), 'error');
+        inp.value = original; inp.disabled = false;
+      }
+    };
+    inp.addEventListener('change', salvar);
+    inp.addEventListener('keydown', e => { if (e.key === 'Enter') inp.blur(); });
+  });
 
   el.querySelectorAll('[data-papel]').forEach(sel => {
     const original = sel.value;
@@ -206,9 +268,14 @@ async function abaParametros(el){
           <div class="field" style="margin-bottom:20px" id="w${esc(p.chave)}">
             <label for="f${esc(p.chave)}">${esc(p.rotulo)}${p.unidade ? ' (' + esc(p.unidade) + ')' : ''}</label>
             <div style="display:flex;gap:8px;align-items:flex-start">
-              <input type="${p.tipo === 'number' ? 'number' : 'text'}" id="f${esc(p.chave)}"
-                     value="${esc(cfg(p.chave))}" ${p.tipo === 'number' ? 'min="1" max="3650"' : ''}
-                     style="${p.tipo === 'number' ? 'max-width:160px' : ''}">
+              ${p.tipo === 'simnao' ? `
+                <select id="f${esc(p.chave)}" style="max-width:160px">
+                  <option value="sim" ${/^(sim|s|true|1)$/i.test(cfg(p.chave)) ? 'selected' : ''}>Sim</option>
+                  <option value="nao" ${/^(sim|s|true|1)$/i.test(cfg(p.chave)) ? '' : 'selected'}>Não</option>
+                </select>` : `
+                <input type="${p.tipo === 'number' ? 'number' : 'text'}" id="f${esc(p.chave)}"
+                       value="${esc(cfg(p.chave))}" ${p.tipo === 'number' ? 'min="1" max="3650"' : ''}
+                       style="${p.tipo === 'number' ? 'max-width:160px' : ''}">`}
               <button class="btn btn-outline" data-salvar="${esc(p.chave)}">Salvar</button>
             </div>
             <div class="hint">${esc(p.ajuda)}</div>
@@ -242,6 +309,116 @@ async function abaParametros(el){
 }
 
 /* ==================================================================== */
+/* E-MAILS POR SETOR                                                    */
+/*                                                                      */
+/* Quando um empréstimo passa do prazo, quem cobra a devolução não é o  */
+/* sistema: é o responsável pelo setor. Esta lista é para onde a        */
+/* Metrologia escreve. Os setores vêm do próprio parâmetro "Setores" —  */
+/* duas listas para manter viram, com o tempo, duas listas diferentes.  */
+/* ==================================================================== */
+async function abaEmails(el){
+  el.innerHTML = htmlCarregando();
+
+  let cadastrados;
+  try { cadastrados = await listarEmailsSetor(); }
+  catch (e){ el.innerHTML = `<div class="warn-box e">${esc(msgErro(e))}</div>`; return; }
+
+  const porSetor = new Map(cadastrados.map(c => [c.setor, c]));
+  const setores  = cfgLista('setores');
+  // Setor que saiu do parâmetro mas ainda tem e-mail cadastrado continua
+  // aparecendo: sumir com ele sem avisar deixaria um registro invisível.
+  const orfaos   = cadastrados.filter(c => !setores.includes(c.setor)).map(c => c.setor);
+  const linhas   = [...setores, ...orfaos];
+  const semEmail = setores.filter(s => !porSetor.has(s)).length;
+
+  el.innerHTML = `
+    <div class="warn-box i">
+      Usado na aba <b>Empréstimo › Em aberto</b>: o botão <b>Notificar responsável</b> abre
+      um e-mail já preenchido para o setor que está com o instrumento. Metrologista também
+      pode notificar; cadastrar e alterar é do administrador.
+    </div>
+    ${semEmail ? `<div class="warn-box w fixa">
+      <b>${semEmail}</b> setor(es) ainda sem e-mail. Para eles o botão de notificar
+      fica desabilitado e a cobrança volta a ser feita no braço.</div>` : ''}
+
+    <div class="card">
+      <div class="card-head"><h2>Responsável por setor</h2>
+        <span class="right">${cadastrados.length} de ${setores.length} cadastrado(s)</span></div>
+      <div class="card-body">
+        ${linhas.length ? `
+        <div class="tbl-wrap"><table class="tbl" style="min-width:780px">
+          <thead><tr><th style="width:170px">Setor</th><th style="width:200px">Responsável</th>
+                     <th>E-mail</th><th style="width:180px"></th></tr></thead>
+          <tbody>${linhas.map(setor => {
+            const c = porSetor.get(setor) || {};
+            const orfao = !setores.includes(setor);
+            return `
+            <tr data-setor="${esc(setor)}">
+              <td><b>${esc(setor)}</b>${orfao
+                ? '<div style="font-size:11px;color:var(--muted)">fora da lista de setores</div>' : ''}</td>
+              <td><input type="text" class="fResp" value="${esc(c.responsavel || '')}"
+                         placeholder="Nome de quem responde"
+                         style="width:100%;font-size:13px;padding:6px 9px;border:1px solid var(--border2);
+                                border-radius:var(--r-sm);font-family:inherit"></td>
+              <td><input type="email" class="fMail" value="${esc(c.email || '')}"
+                         placeholder="setor@perpec.com.br"
+                         style="width:100%;font-size:13px;padding:6px 9px;border:1px solid var(--border2);
+                                border-radius:var(--r-sm);font-family:inherit"></td>
+              <td>
+                <div style="display:flex;gap:6px">
+                  <button class="btn btn-outline btn-sm" data-salvar-mail>Salvar</button>
+                  ${c.email ? '<button class="btn btn-outline btn-sm" data-remover-mail>Remover</button>' : ''}
+                </div>
+                ${c.atualizado_em ? `<div style="font-size:10.5px;color:var(--muted);margin-top:4px">
+                  ${esc(fmtDT(c.atualizado_em))}</div>` : ''}
+              </td>
+            </tr>`;
+          }).join('')}</tbody>
+        </table></div>` : htmlVazio('Nenhum setor configurado. Cadastre a lista em Parâmetros › Setores.')}
+      </div>
+    </div>`;
+
+  el.querySelectorAll('[data-salvar-mail]').forEach(b => b.addEventListener('click', async () => {
+    const tr    = b.closest('tr');
+    const setor = tr.dataset.setor;
+    const email = tr.querySelector('.fMail').value.trim();
+    const resp  = tr.querySelector('.fResp').value.trim();
+
+    // Validação de e-mail também no banco (check constraint). Aqui é só
+    // para não gastar uma ida ao servidor com um erro óbvio.
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)){
+      toast('Informe um e-mail válido para ' + setor + '.', 'error');
+      tr.querySelector('.fMail').focus();
+      return;
+    }
+
+    b.disabled = true; b.textContent = 'Salvando…';
+    try {
+      await salvarEmailSetor(setor, email, resp);
+      toast('E-mail de ' + setor + ' atualizado.', 'success');
+      await abaEmails(el);
+    } catch (e){
+      toast(msgErro(e), 'error');
+      b.disabled = false; b.textContent = 'Salvar';
+    }
+  }));
+
+  el.querySelectorAll('[data-remover-mail]').forEach(b => b.addEventListener('click', async () => {
+    const setor = b.closest('tr').dataset.setor;
+    if (!await confirmar({
+      titulo:'Remover e-mail',
+      texto:`O setor <b>${esc(setor)}</b> deixa de receber a notificação de devolução em atraso.`,
+      rotuloOk:'Remover'
+    })) return;
+    try {
+      await removerEmailSetor(setor);
+      toast('E-mail removido.', 'success');
+      await abaEmails(el);
+    } catch (e){ toast(msgErro(e), 'error'); }
+  }));
+}
+
+/* ==================================================================== */
 /* MANUTENÇÃO — apagar em massa                                         */
 /* ==================================================================== */
 async function abaManutencao(el){
@@ -251,7 +428,10 @@ async function abaManutencao(el){
   })).filter(f => f.qtd > 0);
 
   el.innerHTML = `
-    <div class="warn-box w">
+    <!-- 'fixa': aviso que precede ação destrutiva fica aberto. Guardar
+         atrás de um clique o texto que explica o estrago é convidar o
+         usuário a não lê-lo. -->
+    <div class="warn-box w fixa">
       <b>O que "apagar" significa aqui.</b> Some o instrumento e, por cascata, todas as
       calibrações, inspeções, movimentações e documentos dele. <b>Não</b> some a trilha de
       auditoria — ela é somente-inclusão, e o próprio apagamento entra nela.

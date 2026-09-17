@@ -5,13 +5,24 @@
    confirmada. Nenhum dado pode piscar na tela antes da identificação.
    ===================================================================== */
 import { sb, configurado } from './supabase.js';
-import { esquecerTudo, msgErro } from './utils.js';
+import { esquecerTudo, msgErro, nomeProprio } from './utils.js';
 
 let _perfil = null;
 
 export const perfil    = () => _perfil;
 export const souAdmin  = () => !!_perfil && _perfil.papel === 'admin';
-export const meuNome   = () => _perfil ? (_perfil.nome || _perfil.email) : '';
+
+/* O nome sai normalizado de um lugar só, e por isso sai igual em todo
+   lugar: saudação do painel, cabeçalho, assinatura do e-mail de cobrança
+   e o "emitido por" dos PDFs. O perfil nasce do e-mail
+   (joao@perpec.com.br -> "joao"), então sem isto o sistema trataria a
+   pessoa pelo login a semana inteira. Ver nomeProprio() em utils.js. */
+export const meuNome = () => {
+  if (!_perfil) return '';
+  const bruto = (_perfil.nome || '').trim() || String(_perfil.email || '').split('@')[0];
+  return nomeProprio(bruto.replace(/[._-]+/g, ' '));
+};
+
 export const meuEmail  = () => _perfil ? _perfil.email : '';
 
 /** Sessão + perfil. Retorna null se não houver ninguém logado. */
