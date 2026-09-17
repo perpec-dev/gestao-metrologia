@@ -58,14 +58,19 @@ const STATUS_PLANILHA = {
   'calibracao externa':'em_calibracao_externa', 'externa':'em_calibracao_externa',
   'no laboratorio':'em_calibracao_externa'
 };
+/* Quando a coluna "situacao" já traz o motivo, ele é aproveitado como
+   motivo_inativo. A lista acompanha o parâmetro motivos_inativacao. */
+const MOTIVO_DIRETO = {
+  'sucateado':'Sucateado', 'vago':'Vago', 'nao entregue':'Não entregue',
+  'danificado':'Danificado', 'nao encontrado':'Não encontrado',
+  'necessario manutencao':'Necessário manutenção', 'outros':'Outros'
+};
 const CONDICAO_PLANILHA = {
   'ativo':'ativo', 'ativa':'ativo', 'em uso':'ativo', 'sim':'ativo',
   'inativo':'inativo', 'inativa':'inativo', 'nao':'inativo',
-  'sucateado':'inativo', 'vago':'inativo', 'nao entregue':'inativo', 'danificado':'inativo'
-};
-/* Quando a coluna "situacao" já traz o motivo, aproveita como motivo_inativo. */
-const MOTIVO_DIRETO = {
-  'sucateado':'Sucateado', 'vago':'Vago', 'nao entregue':'Não entregue', 'danificado':'Danificado'
+  // Todo motivo conhecido também vale como situação: quem escreve
+  // "sucateado" na coluna está dizendo que o instrumento está inativo.
+  ...Object.fromEntries(Object.keys(MOTIVO_DIRETO).map(k => [k, 'inativo']))
 };
 
 /* ---------------------------------------------------------------------
@@ -352,9 +357,13 @@ function abaImportInstrumentos(el){
           O certificado em PDF é anexado depois, na tela de Calibração.<br>
           Para <code>solicitado</code> é obrigatório preencher <code>rastreabilidade</code> — o número
           do pedido, requisição ou ordem de serviço que identifica a solicitação.<br><br>
-          <b>Condição física</b> — coluna <code>situacao</code>: <code>ativo</code> ou <code>inativo</code>
-          (aceita também <code>sucateado</code>, <code>vago</code>, <code>não entregue</code> e
-          <code>danificado</code>, que já viram o motivo). Em branco, entra como <b>ativo</b>.
+          <b>Condição física</b> — coluna <code>situacao</code>: <code>ativo</code> ou <code>inativo</code>.
+          Em branco, entra como <b>ativo</b>.<br>
+          Escrevendo <code>inativo</code>, o motivo fica <b>em branco</b> — quem conta a história
+          é a justificativa. Se quiser o motivo preenchido, escreva-o direto na coluna
+          <code>situacao</code> (ou em <code>motivo_inativo</code>): <code>sucateado</code>,
+          <code>vago</code>, <code>não entregue</code>, <code>danificado</code>,
+          <code>não encontrado</code>, <code>necessário manutenção</code> ou <code>outros</code>.
           Linhas inativas exigem <code>justificativa_inativo</code> com 10+ caracteres e não podem
           vir com a calibração solicitada ou em laboratório — inativar no meio da solicitação a
           abandona sem cancelá-la.
@@ -537,7 +546,12 @@ async function previa(el, linhas){
       else problemas.push(`situação "${l.situacao}" não reconhecida`);
     }
     const justInativo = String(l.justificativa_inativo || l.justificativa || '').trim();
-    const motivoInativo = String(l.motivo_inativo || '').trim() || MOTIVO_DIRETO[condBruta] || 'Danificado';
+    /* Sem motivo declarado, o motivo fica VAZIO — não inventado. A planilha
+       que diz só "inativo" está dizendo só isso, e a justificativa
+       obrigatória é que carrega a rastreabilidade. Chutar "Danificado"
+       afirmava um estado físico que ninguém verificou, e o relatório de
+       inativos por motivo saía mentindo. */
+    const motivoInativo = String(l.motivo_inativo || '').trim() || MOTIVO_DIRETO[condBruta] || null;
 
     if (condicao === 'inativo'){
       if (justInativo.length < 10) problemas.push('inativo exige justificativa_inativo com 10+ caracteres');
