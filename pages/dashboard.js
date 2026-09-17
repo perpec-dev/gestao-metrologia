@@ -14,7 +14,7 @@ import { listarInstrumentos, listarEmprestimosAbertos, ouvir,
          limiteAlertaVencimento, cfgBool } from '../supabase.js';
 import { badge, legenda, textoVencimento, STATUS,
          ORDEM_GRAFICO, ORDEM_STATUS_TMMDE } from '../components/status-badge.js';
-import { arcoSituacao, barrasVencimento, pareto, motivosInativos } from '../components/graficos.js';
+import { arcoSituacao, barrasVencimento, pareto } from '../components/graficos.js';
 import { irPara } from '../router.js';
 import { meuNome } from '../auth.js';
 
@@ -120,7 +120,8 @@ async function carregar(silencioso = false){
     (cfgBool('alerta_vencimento_proximo_mes', true) ? ' — fim do próximo mês' : '');
 
   indicadores({ ativos, sobControle, referencias, inativos, descalibrados, proximos,
-                calibrados, standby, solicitados, externas, emprestimos, alerta });
+                calibrados, standby, solicitados, externas, emprestimos, alerta,
+                acervo: instrumentos.length });
 
   ultimoRecorte = { ativos, sobControle, referencias, inativos, acervo: instrumentos.length,
                     descalibrados, proximos, calibrados, standby, solicitados, externas };
@@ -151,6 +152,8 @@ function indicadores(d){
     outros ? outros + ' em posse/externo' : null
   ].filter(Boolean).join(' · ') || 'nenhum instrumento fora';
 
+  const pctAcervo = d.acervo ? Math.round(d.inativos.length / d.acervo * 100) : 0;
+
   el.innerHTML = `
     <button class="kpi c-total" data-ir="">
       <div class="k">Acervo ativo</div><div class="v">${d.ativos.length}</div>
@@ -167,10 +170,23 @@ function indicadores(d){
       <div class="d">${d.solicitados.length} solicitada(s), ${d.externas.length} enviada(s)</div></button>
     <div class="kpi c-solicitado estatico">
       <div class="k">Emprestados</div><div class="v">${d.emprestimos.length}</div>
-      <div class="d">${esc(detalheEmp)}</div></div>`;
+      <div class="d">${esc(detalheEmp)}</div></div>
+    <!-- Denominador é o acervo INTEIRO, não o ativo: "14% está fora de
+         uso" só quer dizer alguma coisa se os inativos estiverem dentro
+         da conta. Estático como Emprestados — é um fato do acervo, não
+         uma fila de trabalho que se clica para atacar. -->
+    <div class="kpi c-inativo estatico">
+      <div class="k">Inativos</div>
+      <div class="v"><span data-num>${pctAcervo}</span>%</div>
+      <div class="d">${d.inativos.length} de ${d.acervo} do acervo fora de uso</div></div>`;
 
-  // Contagem crescente: o número chama atenção para si sem piscar nada.
-  el.querySelectorAll('.kpi .v').forEach(v => animarNumero(v, v.textContent));
+  /* Contagem crescente: o número chama atenção para si sem piscar nada.
+     Onde existe [data-num], é ele que anima — o '%' fica de fora, senão
+     animarNumero leria "14%" como NaN e zeraria o indicador. */
+  el.querySelectorAll('.kpi .v').forEach(v => {
+    const alvo = v.querySelector('[data-num]') || v;
+    animarNumero(alvo, alvo.textContent);
+  });
 
   el.querySelectorAll('[data-ir]').forEach(b => b.addEventListener('click', () => {
     lembrar('filtros.calibracao', { status:b.dataset.ir, familia:'', texto:'', incluirInativos:false });
@@ -181,12 +197,17 @@ function indicadores(d){
 /* ==================================================================== */
 function graficos(d){
   const el = elRaiz.querySelector('#graficos');
-  /* A ordem é a da grade 2×2, e cada linha responde um tipo de pergunta:
-       linha 1 — COMPOSIÇÃO do acervo: o que está em uso, o que está fora.
-       linha 2 — TRABALHO: quando vence, e onde as pendências se juntam.
-     Em uma coluna só (telas estreitas) a mesma sequência continua de pé. */
-  el.innerHTML = `<div id="gArco"></div><div id="gInativos"></div>
-                  <div id="gMeses"></div><div id="gPareto"></div>`;
+  /* Três gráficos, na ordem em que a pergunta aparece: o que eu tenho
+     (composição), quando vence (agenda), onde atacar (concentração).
+
+     Eram quatro. O quarto contava quantos instrumentos estavam inativos
+     e por qual motivo — mas o motivo virou um dado que a importação não
+     preenche mais, e uma barra sozinha num cartão inteiro é desenho sem
+     informação. O número que importava (quanto do acervo está fora de
+     uso) subiu para a faixa de indicadores, que é o lugar de um valor
+     que se lê sem interpretar. */
+  el.innerHTML = `<div id="gArco"></div><div id="gMeses"></div>
+                  <div id="gPareto" class="larga"></div>`;
 
   /* --- 1. Arco de situação -------------------------------------------
      'standby_pausado' entra somado a 'calibrado': é exatamente isso que
@@ -242,22 +263,7 @@ function graficos(d){
   });
   barrasVencimento(el.querySelector('#gMeses'), { meses, totalAtivos: d.sobControle.length });
 
-  /* --- 3. Inativos: quanto e por quê ---------------------------------
-     O denominador aqui é o acervo INTEIRO, não o ativo: "12% do acervo
-     está fora de uso" só quer dizer alguma coisa se os inativos
-     estiverem dentro da conta. */
-  const porMotivo = new Map();
-  d.inativos.forEach(i => {
-    const k = (i.motivo_inativo || '').trim() || 'Sem motivo registrado';
-    porMotivo.set(k, (porMotivo.get(k) || 0) + 1);
-  });
-  motivosInativos(el.querySelector('#gInativos'), {
-    motivos: [...porMotivo.entries()].map(([rotulo, valor]) => ({ rotulo, valor })),
-    inativos: d.inativos.length,
-    acervo: d.acervo
-  });
-
-  /* --- 4. Pareto por família ----------------------------------------- */
+  /* --- 3. Pareto por família ----------------------------------------- */
   const pendentes = [...d.descalibrados, ...d.proximos];
   const mapa = new Map();
   pendentes.forEach(i => {

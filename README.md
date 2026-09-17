@@ -359,6 +359,8 @@ Por isso nenhuma regra crítica depende da tela:
 | Tag não se repete | `tag` é `UNIQUE`, e `criar_instrumento_completo()` serializa a família com advisory lock antes de escolher o número |
 | Tag declarada descreve a própria família | `criar_instrumento_completo()` recusa o que não casar com `{P\|PR}-{código da família}-{NN}` |
 | Editar instrumento não vira update genérico | `atualizar_dados_instrumento()` percorre uma lista branca de 8 colunas e audita campo a campo; tag, família, tipo e data de entrada não têm `GRANT` de UPDATE |
+| Certificado retroativo não altera situação nem vencimento | `registrar_certificado_retroativo()` grava `retroativo = true`; o gatilho `calibracoes_reflete` sai fora, `data_proxima` fica nula e `vw_instrumentos_status` ignora a linha |
+| Retroativo é sempre anterior à calibração vigente | `registrar_certificado_retroativo()` recusa data igual ou posterior ao último `data_calibracao` não retroativo |
 | Instrumento inativo fica fora do fluxo de calibração | `definir_status_workflow()` e `registrar_calibracao()` recusam `condicao_fisica = 'inativo'` |
 | Pedido da calibração não é digitado no fim | `registrar_calibracao()` copia de `instrumentos.pedido_calibracao` e zera a coluna |
 | Referência não vence | `calcular_data_proxima()` devolve `NULL` para `tipo = 'REFERENCIA'` |
@@ -657,6 +659,42 @@ estado em que o instrumento **chegou**; uma foto tirada meses depois mostra o
 instrumento de hoje. No banco, é a coluna `inspecoes.momento` (`recebimento` /
 `posterior`) que guarda a diferença.
 
+### Certificado retroativo — o histórico que ficou na gaveta
+
+Mesma origem do problema da foto: a planilha da importação em massa não carrega
+PDF, então **todo o passado de calibração do acervo antigo ficou de fora**. Os
+certificados existem, em papel ou em pasta de rede, e até aqui a única porta de
+entrada era **Tornar calibrado** — que registra uma calibração *nova* e faria um
+instrumento descalibrado hoje aparecer como calibrado por causa de um papel de
+2023.
+
+O botão **Certificado retroativo**, no bloco de arquivos da ficha, pede o PDF e a
+**data daquela calibração**. O certificado entra na pasta do instrumento e no
+histórico, e **não altera situação, vencimento nem standby**.
+
+Três mecanismos independentes garantem isso, e nenhum deles é a tela:
+
+| Onde | O que faz |
+|---|---|
+| `registrar_certificado_retroativo()` | grava a linha com `retroativo = true` |
+| `tg_calibracao_reflete_instrumento` | sai fora quando a linha é retroativa — não toca em `status_workflow`, `standby` nem `data_inicio_relogio` |
+| `tg_calibracao_data_proxima` | grava `data_proxima` nula: o vencimento de 2023 já passou e não governa nada |
+| `vw_instrumentos_status` | ignora linhas retroativas ao escolher a última calibração |
+
+**Retroativo é passado, e o banco cobra isso.** Certificado com data igual ou
+posterior à última calibração registrada é **recusado**, com a mensagem apontando
+para "Tornar calibrado": se o papel é mais novo que a calibração vigente, ele não
+é histórico — é a calibração atual, e essa precisa mesmo mexer no vencimento. A
+tela confere antes de subir o arquivo, para não deixar PDF órfão no bucket.
+
+Instrumento **inativo** não é bloqueado aqui, ao contrário do registro de
+calibração normal: documentar o passado de um instrumento sucateado é legítimo; o
+que não se pode é registrar serviço novo em cima dele.
+
+No histórico a linha aparece como *"Certificado retroativo · calibração de
+dd/mm/aaaa"*, e não como *"Calibração realizada em…"* — a mesma distinção que o
+sistema já faz entre a foto de recebimento e a foto anexada depois.
+
 ### Remover um arquivo anexado por engano
 
 O caso que acontece de verdade: o certificado do `P-PAQ-03` foi anexado na
@@ -812,23 +850,28 @@ desligar e religar os gatilhos append-only para limpar a própria auditoria.
 
 ## Os gráficos do painel
 
-Quatro, e cada um responde uma pergunta diferente. Todos em SVG escrito à mão
+Três, e cada um responde uma pergunta diferente. Todos em SVG escrito à mão
 (`components/graficos.js`) — nenhuma biblioteca de gráficos entra no projeto.
 
-Eles ficam numa grade **2×2**, e cada linha responde um tipo de pergunta:
+| Gráfico | Pergunta que responde |
+|---|---|
+| **Arco de situação** | Como está o acervo ativo agora? |
+| **Carga por mês** | Quantas calibrações caem em cada um dos próximos 6 meses? Serve para negociar agenda com o laboratório. |
+| **Pareto por família** | Onde atacar primeiro? A linha acumulada mostra quantas famílias resolvem 80% das pendências. |
 
-| | Gráfico | Pergunta que responde |
-|---|---|---|
-| **Composição** | **Arco de situação** | Como está o acervo ativo agora? |
-| | **Instrumentos inativos** | Quanto do acervo está fora de uso, e por quê? |
-| **Trabalho** | **Carga por mês** | Quantas calibrações caem em cada um dos próximos 6 meses? Serve para negociar agenda com o laboratório. |
-| | **Pareto por família** | Onde atacar primeiro? A linha acumulada mostra quantas famílias resolvem 80% das pendências. |
+Eram quatro. O quarto contava **instrumentos inativos por motivo**, e saiu quando
+o motivo deixou de ser preenchido pela importação em massa: uma barra sozinha
+ocupando uma carta inteira é desenho sem informação. O número que interessava —
+quanto do acervo está fora de uso — virou um indicador na faixa do topo, que é o
+lugar de um valor que se lê sem interpretar. Gráfico de barras com uma barra só é
+sempre um número disfarçado.
 
-A contagem de colunas é declarada — 2 em tela larga, 1 em tela estreita — e nunca
-3: com quatro cartas, três colunas deixam a quarta sozinha numa linha, com dois
-vãos vazios do tamanho de um gráfico. As linhas têm altura igual
-(`grid-auto-rows:1fr`) e a tabela-gêmea é empurrada para o rodapé de cada carta,
-o que alinha a base das quatro mesmo com conteúdos de tamanhos diferentes.
+As colunas são declaradas por faixa: 1 em tela estreita, 2 a partir de 820px (com
+o Pareto atravessando a linha inteira, para não sobrar meia carta vazia ao lado) e
+3 a partir de 1280px, onde os três cabem lado a lado acima do piso de 300px que
+`moldura()` exige. As linhas têm altura igual (`grid-auto-rows:1fr`) e a
+tabela-gêmea é empurrada para o rodapé de cada carta, o que alinha a base das três
+mesmo com conteúdos de tamanhos diferentes.
 
 ### Desenho em escala 1:1
 

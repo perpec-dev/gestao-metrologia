@@ -380,6 +380,31 @@ export async function anexarFotoInstrumento(instrumentoId, tag, arquivo, observa
   }));
 }
 
+/**
+ * Certificado de calibração ANTIGO, anexado depois para completar o
+ * histórico. Mesma ordem do anexo de foto — sobe o arquivo, grava o
+ * caminho —, e pela mesma razão.
+ *
+ * Não altera situação, vencimento nem standby do instrumento: a linha
+ * entra em calibracoes marcada como retroativa, e é a RPC (com os
+ * gatilhos e a vw_instrumentos_status) que garante isso, não a tela.
+ *
+ * @param {string} instrumentoId
+ * @param {string} tag          pasta do instrumento no Storage
+ * @param {File}   arquivo      o certificado em PDF
+ * @param {string} data         data da calibração, AAAA-MM-DD
+ * @param {string} [observacao] vai para o histórico junto com o evento
+ */
+export async function registrarCertificadoRetroativo(instrumentoId, tag, arquivo, data, observacao = ''){
+  const caminho = await enviarArquivo(CONFIG.BUCKETS.certificados, arquivo, pastaDoInstrumento(tag));
+  return ok(await sb.rpc('registrar_certificado_retroativo', {
+    p_instrumento_id:   instrumentoId,
+    p_data:             data,
+    p_certificado_path: caminho,
+    p_obs:              observacao || null
+  }));
+}
+
 export const anexarDocumento = async doc =>
   ok(await sb.from('documentos').insert(doc).select().single());
 

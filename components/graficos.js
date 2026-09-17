@@ -38,16 +38,6 @@ function barraV(x, y, larg, alt, raio = 4){
           L ${x + larg} ${y + alt} Z`.replace(/\s+/g, ' ');
 }
 
-/* Retângulo deitado, com a ponta direita arredondada e a base fixa no
-   eixo da esquerda — o espelho de barraV para barras horizontais. */
-function barraH(x, y, larg, alt, raio = 4){
-  const r = Math.min(raio, alt / 2, Math.max(larg, 0));
-  if (larg <= 0.5) return '';
-  return `M ${x} ${y} L ${x + larg - r} ${y} Q ${x + larg} ${y} ${x + larg} ${y + r}
-          L ${x + larg} ${y + alt - r} Q ${x + larg} ${y + alt} ${x + larg - r} ${y + alt}
-          L ${x} ${y + alt} Z`.replace(/\s+/g, ' ');
-}
-
 /* ---------------------------------------------------------------------
    Dica flutuante — o mesmo elemento serve os quatro gráficos.
    Tooltip nunca é o único caminho para um valor: a tabela-gêmea existe.
@@ -258,92 +248,7 @@ export function barrasVencimento(el, { meses, totalAtivos = 0 }){
 }
 
 /* =====================================================================
-   3. INATIVOS — quanto do acervo está fora de uso, e por quê
-
-   Duas perguntas numa carta só, porque uma não vale sem a outra:
-   "12% do acervo está inativo" é um número que assusta ou tranquiliza
-   dependendo do motivo — 12% aguardando manutenção é fila de trabalho,
-   12% não encontrado é problema de controle patrimonial.
-
-   Barras DEITADAS de propósito: o rótulo é texto de tamanho variável
-   ("Necessário manutenção", "Não encontrado") e, na vertical, viraria
-   texto inclinado ou abreviado. Deitado, cada nome é lido na horizontal,
-   do jeito que se lê qualquer outra coisa.
-
-   Série única, cor única: a altura (aqui, o comprimento) já carrega a
-   informação, e pintar cada motivo de uma cor inventaria seis
-   significados novos no semáforo que a aplicação já tem.
-   ===================================================================== */
-export function motivosInativos(el, { motivos, inativos = 0, acervo = 0 }){
-  const percentual = pct(inativos, acervo);
-
-  if (!inativos){
-    el.innerHTML = cartao('Instrumentos inativos',
-      'Quanto do acervo está fora de uso, e por qual motivo.',
-      `<div class="warn-box g" style="margin:0">Nenhum instrumento inativo.
-        Todo o acervo está em uso.</div>`);
-    return;
-  }
-
-  const { alvo, L } = moldura(el, 'Instrumentos inativos',
-    'Quanto do acervo está fora de uso, e por qual motivo. A porcentagem é sobre o acervo inteiro — ativos e inativos.');
-
-  const dados = motivos.filter(m => m.valor > 0)
-                       .sort((a,b) => b.valor - a.valor)
-                       .slice(0, 8);
-  const max = Math.max(1, ...dados.map(m => m.valor));
-
-  /* A calha dos rótulos é fixa: ela precisa caber "Necessário
-     manutenção" e nada mais. Toda a largura extra da carta vai para a
-     barra, que é o que se compara.
-
-     A ALTURA da faixa, ao contrário, é dividida: quatro motivos numa
-     faixa fixa deixariam a carta com metade da altura das vizinhas e um
-     vão morto embaixo. Aqui as faixas se espalham por ~180px, que é a
-     altura das outras cartas, com piso e teto para a barra não virar
-     nem fio nem tijolo. */
-  const mE = 132, mD = 34, mT = 6, mB = 6;
-  const fila   = Math.max(26, Math.min(46, Math.round(180 / dados.length)));
-  const altura = Math.min(20, Math.round(fila * 0.58));
-  const A = mT + dados.length * fila + mB;
-  const plot = L - mE - mD;
-
-  const barras = dados.map((m, i) => {
-    const y = mT + i * fila;
-    const yBarra = y + (fila - altura) / 2;      // barra centrada na faixa
-    const yTexto = y + fila / 2 + 4;             // linha de base no meio
-    const larg = (m.valor / max) * plot;
-    const dica = `${esc(m.rotulo)}: ${pct(m.valor, inativos)}% dos inativos` +
-                 `<span class="l2">${nfmt(m.valor)} instrumento(s) · ${pct(m.valor, acervo)}% do acervo</span>`;
-    return `
-      <g data-dica="${dica}">
-        <rect class="g-alvo" x="0" y="${y}" width="${L}" height="${fila}"/>
-        <text class="g-eixo" x="${mE - 8}" y="${yTexto}" text-anchor="end">${esc(m.rotulo)}</text>
-        <path class="g-marca" d="${barraH(mE, yBarra, larg, altura)}"
-              fill="var(--serie)" style="animation-delay:${i * 60}ms"/>
-        <text class="g-valor" x="${mE + larg + 6}" y="${yTexto}"
-              style="animation-delay:${300 + i * 60}ms">${nfmt(m.valor)}</text>
-      </g>`;
-  }).join('');
-
-  alvo.innerHTML = `
-    <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:14px">
-      <span class="g-hero-num"><span data-num>${percentual}</span>%</span>
-      <span class="g-sub">${nfmt(inativos)} de ${nfmt(acervo)} instrumentos do acervo
-        estão inativos</span>
-    </div>
-    <svg viewBox="0 0 ${L} ${A}" role="img"
-         aria-label="Instrumentos inativos por motivo">${barras}</svg>
-    ${tabelaGemea(['Motivo','Instrumentos','% dos inativos','% do acervo'],
-       dados.map(m => [m.rotulo, nfmt(m.valor),
-                       pct(m.valor, inativos) + '%', pct(m.valor, acervo) + '%']))}`;
-
-  animarNumero(alvo.querySelector('[data-num]'), percentual, 700);
-  ligarDica(alvo);
-}
-
-/* =====================================================================
-   4. PARETO — onde as pendências se concentram
+   3. PARETO — onde as pendências se concentram
 
    Um eixo só: as barras são contagem por família e a linha é a
    contagem ACUMULADA, na mesma escala. O percentual aparece como

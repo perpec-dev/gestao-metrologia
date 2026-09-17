@@ -23,6 +23,13 @@
 --   4. `criar_instrumento_completo` passa a serializar por
 --      família+classificação (advisory lock) e a recusar tag que não
 --      descreva a própria família.
+--   5. A importação parou de CHUTAR o motivo da inativação. Linha que
+--      dizia só "inativo" entrava como "Danificado" — um estado físico
+--      que ninguém verificou, e que fazia o relatório de inativos por
+--      motivo mentir. Agora o motivo fica em branco e quem registra o
+--      porquê é a justificativa, que já é obrigatória. Isso é mudança
+--      de tela (pages/cadastro.js); aqui embaixo está a correção dos
+--      instrumentos que já entraram com o motivo chutado.
 --
 -- COMO RODAR (SQL Editor do Supabase, nesta ordem):
 --   1) 01_schema.sql  -> tags_livres, gerar_tag e criar_instrumento_completo
@@ -90,3 +97,39 @@ select f.codigo,
        public.tags_livres(f.id, 'REFERENCIA', 5) as livres_referencia
   from public.familias f
  where f.codigo = 'MCE';
+
+
+-- ---------------------------------------------------------------------
+-- CORREÇÃO 4 — limpar o motivo chutado pela importação (item 5)
+--
+-- Rode o SELECT primeiro e LEIA a lista. Nem todo "Danificado" é chute:
+-- quem inativou pela tela escolheu o motivo a dedo, e esse deve ficar.
+-- A coluna `justificativa_inativo` é o que distingue um do outro — a da
+-- importação é o texto que veio da planilha.
+--
+-- Este bloco NÃO roda sozinho: o UPDATE está comentado de propósito.
+-- ---------------------------------------------------------------------
+select i.tag, i.descricao, i.motivo_inativo, i.justificativa_inativo, i.criado_em
+  from public.instrumentos i
+ where i.condicao_fisica = 'inativo'
+   and i.motivo_inativo = 'Danificado'
+ order by i.criado_em desc, i.tag;
+
+-- Confira a lista acima. Se ela tiver SÓ os instrumentos importados,
+-- descomente o UPDATE e rode. Se tiver misturado com inativações feitas
+-- pela tela, restrinja pela janela de importação — por exemplo:
+--   and i.criado_em >= '2026-09-17'::date
+--
+-- O motivo fica nulo e o instrumento continua inativo; a condição física
+-- não muda, então o gatilho de auditoria não é acionado e a trilha
+-- existente permanece intacta. A justificativa não é tocada.
+--
+-- update public.instrumentos i
+--    set motivo_inativo = null
+--  where i.condicao_fisica = 'inativo'
+--    and i.motivo_inativo = 'Danificado';
+
+-- Depois de rodar, confira que sobrou o esperado:
+-- select coalesce(motivo_inativo,'(em branco)') as motivo, count(*)
+--   from public.instrumentos where condicao_fisica = 'inativo'
+--  group by 1 order by 2 desc;

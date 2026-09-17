@@ -66,8 +66,12 @@ select
 from public.instrumentos i
 join public.familias f on f.id = i.familia_id
 left join lateral (
+  -- `not retroativo` é a garantia estrutural de que um certificado antigo
+  -- anexado depois não vira "última calibração". A RPC já recusa data
+  -- mais recente que a vigente; esta linha é a barreira que não depende
+  -- de ninguém acertar a data.
   select * from public.calibracoes
-   where instrumento_id = i.id
+   where instrumento_id = i.id and not retroativo
    order by data_calibracao desc, criado_em desc
    limit 1
 ) c on true
@@ -176,7 +180,9 @@ create or replace view public.vw_arquivos as
   select c.instrumento_id, i.tag, i.descricao as instrumento,
          'certificados'::text as bucket, c.certificado_path as arquivo_path,
          'Certificado'::text  as tipo,
-         'Certificado · calibração de ' || to_char(c.data_calibracao,'DD/MM/YYYY') as nome,
+         case when c.retroativo then 'Certificado retroativo · calibração de '
+              else 'Certificado · calibração de ' end
+           || to_char(c.data_calibracao,'DD/MM/YYYY') as nome,
          c.criado_em as quando, c.criado_por_email as autor,
          'calibracao_certificado'::text as origem, c.id as registro_id
     from public.calibracoes c
@@ -252,7 +258,18 @@ union all
   -- registrar a calibração: é a linha desta calibração que tem de contar
   -- por que este instrumento não tem data para vencer.
   select c.instrumento_id, c.criado_em, 'calibracao',
-         'Calibração realizada em ' || to_char(c.data_calibracao,'DD/MM/YYYY'),
+         -- Retroativo é dito com todas as letras, pela mesma razão da foto
+         -- 'posterior' logo acima: quem lê o histórico precisa saber que
+         -- aquele evento documenta o passado e não move o presente. Sem o
+         -- rótulo, um certificado de 2023 anexado hoje pareceria uma
+         -- calibração feita hoje.
+         case when c.retroativo
+              then 'Certificado retroativo · calibração de ' || to_char(c.data_calibracao,'DD/MM/YYYY')
+              else 'Calibração realizada em ' || to_char(c.data_calibracao,'DD/MM/YYYY') end,
+         case when c.retroativo then
+           concat_ws(' · ', 'Histórico — não altera situação nem vencimento',
+                     nullif(c.obs_metrologista,''))
+         else
          concat_ws(' · ',
            -- "Standby", só a palavra. O que ela significa está explicado
            -- na tela em que se decide guardar o instrumento; repetir a
@@ -268,7 +285,7 @@ union all
            -- momentos que contam coisas diferentes. A coluna continua
            -- gravada em calibracoes.pedidos_associados — o vínculo formal
            -- entre certificado e pedido não se perde.
-           nullif(c.obs_metrologista,'')),
+           nullif(c.obs_metrologista,'')) end,
          'certificados', c.certificado_path, c.criado_por_email
     from public.calibracoes c
 union all
@@ -298,6 +315,15 @@ union all
            when 'arquivo_removido'    then 'Arquivo removido'
            when 'arquivo_substituido' then 'Arquivo substituído'
            when 'apagado'             then 'Instrumento apagado'
+           -- Correção de dado cadastral, por atualizar_dados_instrumento.
+           when 'descricao'           then 'Descrição alterada'
+           when 'fabricante'          then 'Fabricante alterado'
+           when 'resolucao'           then 'Resolução alterada'
+           when 'num_serie'           then 'Número de série alterado'
+           when 'observacoes'         then 'Observações alteradas'
+           when 'nota_fiscal'         then 'Nota fiscal alterada'
+           when 'pedido_compra'       then 'Pedido de compra alterado'
+           when 'localizacao_normal'  then 'Localização alterada'
            else 'Alteração: ' || a.campo
          end,
          concat_ws(' · ', coalesce(a.valor_antigo,'—') || ' → ' || coalesce(a.valor_novo,'—'),

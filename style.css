@@ -449,6 +449,9 @@ details.card[open] .chevron svg{transform:rotate(180deg);stroke:var(--red)}
 .kpi.c-externa::after{background:var(--status-em-calibracao)}      .kpi.c-externa .k{color:var(--status-em-calibracao)}
 .kpi.c-standby::after{background:var(--status-standby-pausado)}    .kpi.c-standby .k{color:var(--status-standby-pausado)}
 .kpi.c-referencia::after{background:var(--status-referencia)}      .kpi.c-referencia .k{color:var(--status-referencia)}
+/* Inativo não tem cor no semáforo — e não deve ter: ele está fora do
+   fluxo de calibração, não em algum estágio dele. Cinza, como o badge. */
+.kpi.c-inativo::after{background:var(--border2)}                   .kpi.c-inativo .k{color:var(--muted)}
 .kpi.sel{border-color:var(--red);box-shadow:0 0 0 3px rgba(192,57,43,.1)}
 .kpi.estatico{cursor:default}
 .kpi.estatico:hover{transform:none;box-shadow:var(--sh-1);border-color:var(--border)}
@@ -476,7 +479,18 @@ details.card[open] .chevron svg{transform:rotate(180deg);stroke:var(--red)}
    tamanhos diferentes parecerem do mesmo tamanho.
    --------------------------------------------------------------------- */
 .graficos{display:grid;grid-template-columns:1fr;grid-auto-rows:1fr;gap:16px;margin-bottom:1.5rem}
-@media(min-width:820px){.graficos{grid-template-columns:repeat(2,1fr)}}
+/* São TRÊS gráficos. Em duas colunas o terceiro ficaria com meia carta e
+   um vão morto ao lado — por isso ele atravessa a linha inteira. A partir
+   de 1280px os três cabem lado a lado, cada um acima do piso de 300px que
+   moldura() exige, e não sobra vão nenhum para atravessar. */
+@media(min-width:820px){
+  .graficos{grid-template-columns:repeat(2,1fr)}
+  .graficos .larga{grid-column:1/-1}
+}
+@media(min-width:1280px){
+  .graficos{grid-template-columns:repeat(3,1fr)}
+  .graficos .larga{grid-column:auto}
+}
 .graficos .card{margin-bottom:0;display:flex;flex-direction:column}
 .graficos .card-body{flex:1;display:flex;flex-direction:column}
 /* Sem teto de largura: o gráfico ocupa a carta inteira. O texto do SVG

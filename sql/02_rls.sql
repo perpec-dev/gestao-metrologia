@@ -117,7 +117,15 @@ grant execute on function public.tags_livres(uuid,text,int) to authenticated;
 grant execute on function public.calcular_data_proxima(uuid,date,boolean) to authenticated;
 grant execute on function public.criar_instrumento_completo(jsonb,jsonb,jsonb) to authenticated;
 grant execute on function public.registrar_calibracao(uuid,jsonb) to authenticated;
+-- Certificado antigo é trabalho de metrologista, como anexar foto: quem
+-- acha o PDF na pasta é quem sobe. A linha entra marcada como retroativa
+-- e não mexe em situação nem em vencimento — a regra vive na função.
+grant execute on function public.registrar_certificado_retroativo(uuid,date,text,text) to authenticated;
 grant execute on function public.alterar_periodicidade(uuid,int,boolean,jsonb,text) to authenticated;
+-- Corrigir dado cadastral é trabalho de metrologista: quem lê o número de
+-- série errado na bancada é quem corrige. A lista branca de colunas e a
+-- auditoria por campo vivem dentro da função.
+grant execute on function public.atualizar_dados_instrumento(uuid,jsonb,text) to authenticated;
 grant execute on function public.inativar_instrumento(uuid,text,text) to authenticated;
 grant execute on function public.reativar_instrumento(uuid,text) to authenticated;
 grant execute on function public.definir_status_workflow(uuid,text,text,text) to authenticated;

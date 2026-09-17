@@ -234,6 +234,13 @@ create table if not exists public.calibracoes (
   obs_metrologista   text,
   laudo_path         text,
   standby_apos       boolean not null default false,
+  -- Certificado antigo anexado depois, para completar o histórico de um
+  -- instrumento que já estava na empresa. A linha é uma calibração de
+  -- verdade — tem data, certificado e autor —, mas documenta o PASSADO:
+  -- não move a situação do instrumento, não recalcula vencimento e é
+  -- ignorada por vw_instrumentos_status na hora de dizer qual foi a
+  -- última calibração.
+  retroativo         boolean not null default false,
   criado_por_email   text,
   criado_em          timestamptz not null default now()
 );
@@ -516,8 +523,15 @@ end $$;
 create or replace function public.tg_calibracao_data_proxima()
 returns trigger language plpgsql security definer set search_path = public as $$
 begin
-  new.data_proxima := public.calcular_data_proxima(
-    new.instrumento_id, new.data_calibracao, new.standby_apos);
+  -- Certificado retroativo não tem vencimento: o dele já passou, e nada
+  -- no sistema deve usar essa data. Calculá-la só encheria a linha do
+  -- tempo de um número que parece prazo e não é.
+  if new.retroativo then
+    new.data_proxima := null;
+  else
+    new.data_proxima := public.calcular_data_proxima(
+      new.instrumento_id, new.data_calibracao, new.standby_apos);
+  end if;
   if tg_op = 'INSERT' then
     new.criado_por_email := coalesce(new.criado_por_email, public.meu_email());
   end if;
@@ -534,6 +548,12 @@ create trigger calibracoes_data_proxima
 create or replace function public.tg_calibracao_reflete_instrumento()
 returns trigger language plpgsql security definer set search_path = public as $$
 begin
+  -- Certificado retroativo documenta o passado e não move o presente:
+  -- anexar o certificado de 2023 não pode fazer um instrumento
+  -- descalibrado hoje aparecer como calibrado. Sem esta saída, todo
+  -- insert em calibracoes mexeria na situação do instrumento.
+  if new.retroativo then return new; end if;
+
   update public.instrumentos
      set status_workflow     = 'calibrado',
          standby             = new.standby_apos,
@@ -805,6 +825,84 @@ begin
   return v_row;
 end $$;
 
+-- 13.2b Certificado RETROATIVO — completar o histórico sem mexer no presente
+--
+-- O caso real: a empresa tem uma pilha de certificados antigos em PDF que
+-- nunca entraram no sistema, de instrumentos que já estavam na casa. O
+-- único caminho para anexá-los era "Tornar calibrado", que registra uma
+-- calibração nova — e faria um instrumento descalibrado hoje aparecer
+-- como calibrado por causa de um papel de 2023.
+--
+-- Aqui a linha entra marcada como `retroativo`, e três coisas decorrem
+-- disso, cada uma num lugar diferente:
+--   · tg_calibracao_reflete_instrumento sai fora  -> situação, standby e
+--     relógio de validade não são tocados;
+--   · tg_calibracao_data_proxima grava NULL       -> a linha não carrega
+--     um vencimento que já passou;
+--   · vw_instrumentos_status ignora a linha       -> "última calibração"
+--     e "próxima calibração" continuam vindo da calibração vigente.
+--
+-- RETROATIVO É PASSADO, e a função cobra isso: certificado com data mais
+-- recente que a última calibração registrada não é histórico, é a
+-- calibração atual, e o caminho dele é registrar_calibracao.
+--
+-- Instrumento INATIVO não é bloqueado aqui, ao contrário de
+-- registrar_calibracao: documentar o passado de um instrumento sucateado
+-- é legítimo — o que não se pode é registrar serviço novo em cima dele.
+create or replace function public.registrar_certificado_retroativo(
+  p_instrumento_id   uuid,
+  p_data             date,
+  p_certificado_path text,
+  p_obs              text default null
+) returns public.calibracoes
+language plpgsql security definer set search_path = public as $$
+declare
+  v_row    public.calibracoes%rowtype;
+  v_tag    text;
+  v_ultima date;
+  v_cert   text := nullif(btrim(coalesce(p_certificado_path,'')),'');
+begin
+  if not public.sou_ativo() then raise exception 'Usuário sem permissão.'; end if;
+
+  select tag into v_tag from public.instrumentos where id = p_instrumento_id;
+  if v_tag is null then raise exception 'Instrumento não encontrado.'; end if;
+
+  -- Mesma regra da calibração normal: registro sem o arquivo é uma linha
+  -- de histórico sem prova nenhuma.
+  if v_cert is null then
+    raise exception 'Anexe o certificado em PDF para registrar a calibração retroativa de %.', v_tag;
+  end if;
+
+  if p_data is null then
+    raise exception 'Informe a data da calibração do certificado.';
+  end if;
+  if p_data > current_date then
+    raise exception 'A data da calibração não pode estar no futuro.';
+  end if;
+
+  -- A vigente é a referência, e só ela: comparar com outro retroativo
+  -- impediria anexar 2021 depois de já ter anexado 2023.
+  select max(data_calibracao) into v_ultima
+    from public.calibracoes
+   where instrumento_id = p_instrumento_id and not retroativo;
+
+  if v_ultima is not null and p_data >= v_ultima then
+    raise exception 'O certificado de % é de %, igual ou mais recente que a última calibração registrada (%). Retroativo é só para calibração ANTERIOR à vigente — para registrar a calibração atual, use "Tornar calibrado".',
+      v_tag, to_char(p_data,'DD/MM/YYYY'), to_char(v_ultima,'DD/MM/YYYY');
+  end if;
+
+  insert into public.calibracoes (
+    instrumento_id, data_calibracao, certificado_path, obs_metrologista,
+    standby_apos, retroativo
+  ) values (
+    p_instrumento_id, p_data, v_cert,
+    nullif(btrim(coalesce(p_obs,'')),''),
+    false, true
+  ) returning * into v_row;
+
+  return v_row;
+end $$;
+
 -- 13.3 Alterar periodicidade (auditada, justificativa obrigatória)
 create or replace function public.alterar_periodicidade(
   p_familia_id    uuid,
@@ -839,6 +937,92 @@ begin
               coalesce(f->>'ancora','entrada'));
     end loop;
   end if;
+end $$;
+
+-- 13.3b Corrigir os dados cadastrais de um instrumento já cadastrado.
+--
+-- O que ENTRA aqui é o que descreve o instrumento no papel: descrição,
+-- fabricante, resolução, número de série, observações, nota fiscal,
+-- pedido de compra e localização. Errar qualquer um desses na entrada
+-- não pode custar um recadastro, porque recadastrar troca a tag e joga
+-- fora histórico, arquivos e empréstimos.
+--
+-- O que NÃO entra, e a exclusão é a parte importante:
+--   · tag, familia_id, tipo e data_entrada — identidade do instrumento.
+--     Não têm grant de update em lugar nenhum e não se corrigem.
+--   · status_workflow — tem regra própria em definir_status_workflow
+--     (exige rastreabilidade ao solicitar, recusa instrumento inativo).
+--   · condicao_fisica, motivo_inativo, justificativa_inativo — passam
+--     por inativar_instrumento/reativar_instrumento, que exigem
+--     justificativa e disparam o gatilho de auditoria.
+--   · standby e data_inicio_relogio — relógio de validade. Standby é
+--     decidido ao registrar a calibração; mexer aqui recalcularia a
+--     próxima data por um caminho que ninguém espera.
+--
+-- Cada campo alterado vira UMA linha de auditoria, com o valor antigo e
+-- o novo. A justificativa é opcional: quem, quando e de→para já contam
+-- a história de uma correção cadastral. A lista branca é o que impede
+-- esta função de virar um update genérico na tabela.
+create or replace function public.atualizar_dados_instrumento(
+  p_instrumento_id uuid,
+  p_campos         jsonb,
+  p_justificativa  text default null
+) returns public.instrumentos
+language plpgsql security definer set search_path = public as $$
+declare
+  v_old    public.instrumentos%rowtype;
+  v_row    public.instrumentos%rowtype;
+  v_antes  jsonb;
+  v_mudou  jsonb := '{}'::jsonb;
+  v_campo  text;
+  v_novo   text;
+  v_ant    text;
+begin
+  if not public.sou_ativo() then raise exception 'Usuário sem permissão.'; end if;
+
+  select * into v_old from public.instrumentos where id = p_instrumento_id;
+  if not found then raise exception 'Instrumento não encontrado.'; end if;
+
+  v_antes := to_jsonb(v_old);
+
+  -- Percorre a LISTA BRANCA, e não as chaves recebidas: o que a tela
+  -- mandar fora dela é ignorado, sem erro e sem efeito.
+  foreach v_campo in array array['descricao','fabricante','resolucao','num_serie',
+                                 'observacoes','nota_fiscal','pedido_compra',
+                                 'localizacao_normal'] loop
+    if p_campos ? v_campo then
+      v_novo := nullif(btrim(coalesce(p_campos->>v_campo, '')), '');
+      v_ant  := v_antes->>v_campo;
+      if v_novo is distinct from v_ant then
+        perform public.auditar('instrumentos', p_instrumento_id, v_campo,
+                               v_ant, v_novo, p_justificativa);
+        v_mudou := v_mudou || jsonb_build_object(v_campo, v_novo);
+      end if;
+    end if;
+  end loop;
+
+  -- Salvar sem ter mudado nada não é alteração: não suja a trilha.
+  if v_mudou = '{}'::jsonb then return v_old; end if;
+
+  if v_mudou ? 'descricao' and coalesce(v_mudou->>'descricao', '') = '' then
+    raise exception 'A descrição não pode ficar vazia.';
+  end if;
+
+  -- `case` e não `coalesce`: é o que permite LIMPAR um campo. Com
+  -- coalesce, apagar a nota fiscal devolveria o valor antigo.
+  update public.instrumentos i set
+    descricao          = case when v_mudou ? 'descricao'          then v_mudou->>'descricao'          else i.descricao          end,
+    fabricante         = case when v_mudou ? 'fabricante'         then v_mudou->>'fabricante'         else i.fabricante         end,
+    resolucao          = case when v_mudou ? 'resolucao'          then v_mudou->>'resolucao'          else i.resolucao          end,
+    num_serie          = case when v_mudou ? 'num_serie'          then v_mudou->>'num_serie'          else i.num_serie          end,
+    observacoes        = case when v_mudou ? 'observacoes'        then v_mudou->>'observacoes'        else i.observacoes        end,
+    nota_fiscal        = case when v_mudou ? 'nota_fiscal'        then v_mudou->>'nota_fiscal'        else i.nota_fiscal        end,
+    pedido_compra      = case when v_mudou ? 'pedido_compra'      then v_mudou->>'pedido_compra'      else i.pedido_compra      end,
+    localizacao_normal = case when v_mudou ? 'localizacao_normal' then v_mudou->>'localizacao_normal' else i.localizacao_normal end
+   where i.id = p_instrumento_id
+   returning * into v_row;
+
+  return v_row;
 end $$;
 
 -- 13.4 Inativar / reativar (auditada, justificativa obrigatória)

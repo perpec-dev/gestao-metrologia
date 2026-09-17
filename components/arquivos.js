@@ -16,9 +16,10 @@
    Os links do Storage são assinados na hora do clique — ligarArquivos,
    emprestado da linha do tempo, já faz exatamente isso.
    ===================================================================== */
-import { esc, fmtDT, htmlVazio, toast, msgErro } from '../utils.js';
+import { esc, fmtDT, fmtData, hojeISO, htmlVazio, toast, msgErro } from '../utils.js';
 import { listarArquivosInstrumento, removerArquivo, enviarArquivo,
-         anexarFotoInstrumento, pastaDoInstrumento } from '../supabase.js';
+         anexarFotoInstrumento, registrarCertificadoRetroativo,
+         pastaDoInstrumento } from '../supabase.js';
 import { ligarArquivos } from './timeline.js';
 import { abrirModal } from './modal.js';
 import { souAdmin } from '../auth.js';
@@ -297,6 +298,128 @@ export function ligarAnexoFoto(raiz, aoConcluir){
     e.preventDefault(); e.stopPropagation();
     modalAnexarFoto({ id:b.dataset.foto, tag:b.dataset.tag, descricao:b.dataset.desc },
                     aoConcluir);
+  }));
+}
+
+/* ---------------------------------------------------------------------
+   CERTIFICADO RETROATIVO — o histórico que ficou na gaveta
+
+   O acervo antigo entrou por importação em massa, sem certificado
+   nenhum: a planilha não carrega PDF. Os certificados das calibrações
+   passadas existem, em papel ou em pasta de rede, e não tinham porta de
+   entrada — a única era "Tornar calibrado", que registra calibração
+   NOVA e mudaria a situação do instrumento.
+
+   Aqui o certificado entra como o que ele é: prova de uma calibração que
+   já aconteceu. Vai para a pasta e para a linha do tempo, e não encosta
+   em situação, vencimento nem standby. Quem garante isso é o banco (a
+   RPC grava `retroativo = true`, o gatilho sai fora e a view de status
+   ignora a linha); a tela só explica a regra para quem está usando.
+   --------------------------------------------------------------------- */
+export function modalCertificadoRetroativo(instr, aoConcluir){
+  const hoje = hojeISO();
+  // A ficha já sabe qual é a calibração vigente. Conferir aqui evita
+  // subir um PDF que a RPC vai recusar — arquivo órfão no bucket.
+  const ultima = instr.ultima_calibracao || null;
+
+  abrirModal({
+    titulo: `Certificado retroativo — ${instr.tag}`,
+    fecharFora: false,
+    corpo: `
+      <p style="font-size:13.5px;color:var(--text2);margin:0 0 14px">
+        ${esc(instr.descricao || '')}</p>
+
+      <!-- 'fixa': é a regra da tela. Fechada, a pergunta "por que a
+           situação não mudou depois que eu anexei?" ficaria sem resposta. -->
+      <div class="warn-box i fixa">
+        O certificado entra no <b>histórico</b> e na pasta do instrumento, e
+        <b>não altera</b> situação de calibração, data de vencimento nem standby.
+        É para completar o passado de quem entrou pela importação em massa.<br>
+        Para registrar a calibração <b>atual</b>, use <b>Tornar calibrado</b> —
+        é ela que vale para a validade.
+        ${ultima ? `<br>Última calibração registrada: <b>${esc(fmtData(ultima))}</b>.
+           O certificado retroativo precisa ser anterior a essa data.` : ''}
+      </div>
+
+      <div class="field" id="wCertRetro">
+        <label>Certificado em PDF<span class="req">*</span></label>
+        <div class="file" id="dCertRetro">
+          <input type="file" id="fCertRetro" accept="application/pdf">
+          <div class="txt">Clique ou arraste o certificado aqui</div>
+        </div>
+        <div class="hint">PDF de até ${CONFIG.MAX_MB_PDF} MB.</div>
+        <div class="msg" id="mCertRetro"></div>
+      </div>
+
+      <div class="field" id="wDataRetro" style="margin-top:12px">
+        <label for="fDataRetro">Data desta calibração<span class="req">*</span></label>
+        <input type="date" id="fDataRetro" max="${esc(hoje)}">
+        <div class="hint">A data que está no certificado, não a de hoje.</div>
+        <div class="msg" id="mDataRetro"></div>
+      </div>
+
+      <div class="field" id="wObsRetro" style="margin-top:12px">
+        <label for="fObsRetro">Observação</label>
+        <textarea id="fObsRetro" placeholder="Ex.: certificado RBC 2023/0412, laboratório Xyz."></textarea>
+        <div class="hint">Opcional. Vai para a linha do tempo junto com o certificado.</div>
+      </div>`,
+    acoes: [
+      { rotulo:'Cancelar', classe:'btn-outline', onClick: f => f() },
+      { rotulo:'Enviar certificado', classe:'btn-green', onClick: async (fechar, bt) => {
+          const erro = (campo, msg) => {
+            document.getElementById('w' + campo).classList.add('err');
+            document.getElementById('m' + campo).textContent = msg;
+          };
+          const pdf  = document.getElementById('fCertRetro').files[0] || null;
+          const data = document.getElementById('fDataRetro').value;
+
+          if (!pdf)  { erro('CertRetro','Anexe o certificado em PDF.'); return; }
+          if (!data) { erro('DataRetro','Informe a data da calibração.'); return; }
+          if (data > hoje){ erro('DataRetro','A data não pode estar no futuro.'); return; }
+          if (ultima && data >= ultima){
+            erro('DataRetro', `Precisa ser anterior a ${fmtData(ultima)}, a última calibração `
+                            + 'registrada. Se este é o certificado atual, use "Tornar calibrado".');
+            return;
+          }
+
+          bt.disabled = true; bt.textContent = 'Enviando…';
+          try {
+            await registrarCertificadoRetroativo(instr.id, instr.tag, pdf, data,
+              document.getElementById('fObsRetro').value.trim());
+            fechar();
+            toast('Certificado retroativo anexado ao histórico.', 'success');
+            if (aoConcluir) aoConcluir();
+          } catch (e){
+            toast(msgErro(e), 'error');
+            bt.disabled = false; bt.textContent = 'Enviar certificado';
+          }
+      } }
+    ],
+    aoAbrir: body => {
+      const inp = body.querySelector('#fCertRetro');
+      inp.addEventListener('change', () => {
+        const caixa = inp.closest('.file'), a = inp.files[0];
+        caixa.classList.toggle('ok', !!a);
+        caixa.querySelector('.txt').textContent = a ? a.name : 'Clique ou arraste o certificado aqui';
+      });
+    }
+  });
+}
+
+/** Botão "Certificado retroativo" — leva no elemento o que o modal precisa. */
+export const htmlBotaoCertificadoRetroativo = (instr, rotulo = 'Certificado retroativo') => `
+  <button class="btn btn-outline btn-sm" data-cert-retro="${esc(instr.id)}"
+          data-tag="${esc(instr.tag)}" data-desc="${esc(instr.descricao || '')}"
+          data-ultima="${esc(instr.ultima_calibracao || '')}"
+          title="Anexar um certificado de calibração anterior, sem alterar a situação">${esc(rotulo)}</button>`;
+
+/** Liga os botões "Certificado retroativo" de uma tela já desenhada. */
+export function ligarCertificadoRetroativo(raiz, aoConcluir){
+  raiz.querySelectorAll('[data-cert-retro]').forEach(b => b.addEventListener('click', e => {
+    e.preventDefault(); e.stopPropagation();
+    modalCertificadoRetroativo({ id:b.dataset.certRetro, tag:b.dataset.tag,
+                                 descricao:b.dataset.desc,
+                                 ultima_calibracao:b.dataset.ultima || null }, aoConcluir);
   }));
 }
 
