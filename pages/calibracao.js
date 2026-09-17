@@ -13,7 +13,7 @@ import { esc, fmtData, hojeISO, toast, msgErro, debounce, chave,
          lembrar, lembrado, htmlCarregando } from '../utils.js';
 import { listarInstrumentos, buscarInstrumento, listarFamilias, registrarCalibracao,
          definirStatusWorkflow, enviarArquivo, ouvir, abrirArquivo,
-         pastaDoInstrumento } from '../supabase.js';
+         pastaDoInstrumento, atualizarInstrumento } from '../supabase.js';
 import { CONFIG } from '../config.js';
 import { criarTabela } from '../components/tabela.js';
 import { badge, classeLinha, legenda, rotulo, textoVencimento,
@@ -241,8 +241,15 @@ export async function abrirDetalhe(id, container){
       ${i.observacoes ? `<div class="sec-title">Observações</div>
         <p style="font-size:13.5px;line-height:1.6;color:var(--text2);white-space:pre-wrap">${esc(i.observacoes)}</p>` : ''}
 
-      ${i.certificado_path ? `<div style="margin-top:12px">
-        <button class="btn btn-outline btn-sm" id="btCert">Abrir último certificado</button></div>` : ''}
+      <div class="act-group" style="margin-top:12px">
+        <!-- Corrigir o que foi digitado errado não pode custar um
+             recadastro: recadastrar troca a tag e joga fora histórico,
+             arquivos e empréstimos. Tag, família, classificação e data de
+             entrada continuam sem conserto — são a identidade. -->
+        <button class="btn btn-outline btn-sm" id="btEditar">Editar dados</button>
+        ${i.certificado_path
+          ? `<button class="btn btn-outline btn-sm" id="btCert">Abrir último certificado</button>` : ''}
+      </div>
 
       <div class="sec-title">Situação de trabalho</div>
       ${inativo ? `
@@ -303,6 +310,12 @@ export async function abrirDetalhe(id, container){
         catch (e){ toast(msgErro(e), 'error'); }
       });
 
+      // Mesma mecânica do anexo de arquivo: o modal é um elemento só, e o
+      // de edição abre por cima da ficha. Salvo, a ficha volta inteira —
+      // com os dados novos e a alteração já no histórico.
+      const btEd = body.querySelector('#btEditar');
+      if (btEd) btEd.addEventListener('click', () => modalEditarInstrumento(i, repintarFicha));
+
       const btEmp = body.querySelector('#btEmprestar');
       if (btEmp) btEmp.addEventListener('click', () => { fecharModal(); irPara('emprestimo', i.id); });
 
@@ -337,6 +350,104 @@ export async function abrirDetalhe(id, container){
         } catch (e){ toast(msgErro(e), 'error'); }
       }));
     }
+  });
+}
+
+/* --------------------------------------------------------------------
+   Editar os dados cadastrais.
+
+   Só o que descreve o instrumento no papel. Tag, família, classificação
+   e data de entrada não aparecem aqui porque não se corrigem em lugar
+   nenhum — são a identidade, e histórico, arquivos e empréstimos estão
+   pendurados nela. Condição física e situação de calibração também
+   ficam de fora: têm caminho próprio, com regra própria.
+
+   Cada campo alterado vira uma linha na auditoria, que aparece logo
+   abaixo, no Histórico completo da própria ficha. A justificativa é
+   opcional: numa correção cadastral, quem, quando e de→para já contam
+   a história.
+   -------------------------------------------------------------------- */
+const CAMPOS_EDITAVEIS = [
+  { id:'Descricao',    campo:'descricao',          rotulo:'Descrição', req:true, classe:'full' },
+  { id:'Fabricante',   campo:'fabricante',         rotulo:'Fabricante' },
+  { id:'NumSerie',     campo:'num_serie',          rotulo:'Número de série' },
+  { id:'Resolucao',    campo:'resolucao',          rotulo:'Resolução / faixa', soTmmde:true },
+  { id:'Localizacao',  campo:'localizacao_normal', rotulo:'Localização normal', soTmmde:true },
+  { id:'NotaFiscal',   campo:'nota_fiscal',        rotulo:'Nota fiscal' },
+  { id:'PedidoCompra', campo:'pedido_compra',      rotulo:'Pedido de compra' }
+];
+
+function modalEditarInstrumento(i, aoSalvar){
+  const referencia = i.tipo === 'REFERENCIA';
+  const campos = CAMPOS_EDITAVEIS.filter(c => !(c.soTmmde && referencia));
+
+  abrirModal({
+    titulo: `Editar dados — ${i.tag}`,
+    largo: true,
+    fecharFora: false,
+    corpo: `
+      <!-- 'fixa': é a regra da tela, e fechada a pergunta "por que não
+           consigo corrigir a tag?" ficaria sem resposta visível. -->
+      <div class="warn-box i fixa">
+        Alterações entram na <b>trilha de auditoria</b> com o seu e-mail, a data e o
+        valor anterior — e aparecem no histórico do instrumento.<br>
+        <b>Tag, família, classificação e data de entrada não se corrigem aqui:</b>
+        são a identidade do instrumento. Condição física e situação de calibração
+        têm caminho próprio.
+      </div>
+      <div class="g2">
+        ${campos.map(c => `
+          <div class="field ${c.classe || ''}" id="wEd${c.id}">
+            <label for="fEd${c.id}">${esc(c.rotulo)}${c.req ? '<span class="req">*</span>' : ''}</label>
+            <input type="text" id="fEd${c.id}" value="${esc(i[c.campo] || '')}" autocomplete="off">
+            <div class="msg" id="mEd${c.id}"></div>
+          </div>`).join('')}
+        <div class="field full" id="wEdObservacoes">
+          <label for="fEdObservacoes">Observações</label>
+          <textarea id="fEdObservacoes">${esc(i.observacoes || '')}</textarea>
+          <div class="msg" id="mEdObservacoes"></div>
+        </div>
+        <div class="field full" id="wEdJust">
+          <label for="fEdJust">Justificativa</label>
+          <textarea id="fEdJust" placeholder="O que motivou a correção. Ex.: número de série conferido na bancada."></textarea>
+          <div class="hint">Opcional — a alteração é auditada com ou sem ela.</div>
+        </div>
+      </div>`,
+    acoes: [
+      { rotulo:'Cancelar', classe:'btn-outline', onClick: f => f() },
+      { rotulo:'Salvar alterações', classe:'btn-red', onClick: async (fechar, bt) => {
+          const ler = id => document.getElementById('fEd' + id).value.trim();
+
+          const desc = ler('Descricao');
+          if (desc.length < 2){
+            document.getElementById('wEdDescricao').classList.add('err');
+            document.getElementById('mEdDescricao').textContent = 'Descreva o instrumento.';
+            return;
+          }
+
+          // Só o que mudou: a trilha de auditoria é por campo, e mandar
+          // o formulário inteiro não muda nada além do tráfego.
+          const mudou = {};
+          [...campos, { id:'Observacoes', campo:'observacoes' }].forEach(c => {
+            const novo = ler(c.id);
+            if (novo !== String(i[c.campo] || '').trim()) mudou[c.campo] = novo;
+          });
+
+          if (!Object.keys(mudou).length){ fechar(); return; }
+
+          bt.disabled = true; bt.textContent = 'Salvando…';
+          try {
+            await atualizarInstrumento(i.id, mudou, ler('Just'));
+            fechar();
+            toast('Dados atualizados e registrados na auditoria.', 'success');
+            aoSalvar();
+          } catch (e){
+            toast(msgErro(e), 'error');
+            bt.disabled = false; bt.textContent = 'Salvar alterações';
+          }
+      } }
+    ],
+    aoAbrir: body => body.querySelector('#fEdDescricao').focus()
   });
 }
 
