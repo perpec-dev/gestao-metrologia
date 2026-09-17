@@ -358,6 +358,7 @@ Por isso nenhuma regra crítica depende da tela:
 | `data_proxima` não é escolhida pelo usuário | gatilho `calibracoes_data_proxima` sobrescreve sempre |
 | Tag não se repete | `tag` é `UNIQUE`, e `criar_instrumento_completo()` serializa a família com advisory lock antes de escolher o número |
 | Tag declarada descreve a própria família | `criar_instrumento_completo()` recusa o que não casar com `{P\|PR}-{código da família}-{NN}` |
+| Editar instrumento não vira update genérico | `atualizar_dados_instrumento()` percorre uma lista branca de 8 colunas e audita campo a campo; tag, família, tipo e data de entrada não têm `GRANT` de UPDATE |
 | Instrumento inativo fica fora do fluxo de calibração | `definir_status_workflow()` e `registrar_calibracao()` recusam `condicao_fisica = 'inativo'` |
 | Pedido da calibração não é digitado no fim | `registrar_calibracao()` copia de `instrumentos.pedido_calibracao` e zera a coluna |
 | Referência não vence | `calcular_data_proxima()` devolve `NULL` para `tipo = 'REFERENCIA'` |
@@ -447,7 +448,8 @@ de instrumentos vem com cinco linhas de exemplo, uma por caso de preenchimento.
 | `status` | não | `calibrado`, `descalibrado`, `solicitado`, `em calibracao externa` — **padrão `descalibrado`**; ignorado em linhas de referência |
 | `data_calibracao` | só se `status=calibrado` | `AAAA-MM-DD` ou `DD/MM/AAAA` — ignorado em linhas de referência |
 | `rastreabilidade` | só se `status=solicitado` | número do pedido, requisição ou ordem de serviço |
-| `situacao` | não | `ativo` / `inativo` — também aceita `sucateado`, `vago`, `não entregue`, `danificado`, que já viram o motivo. **Padrão `ativo`** |
+| `situacao` | não | `ativo` / `inativo` — **padrão `ativo`**. Com `inativo`, o motivo fica em branco: é a justificativa que registra o porquê. Para gravar o motivo, escreva-o aqui (ou em `motivo_inativo`): `sucateado`, `vago`, `não entregue`, `danificado`, `não encontrado`, `necessário manutenção`, `outros` |
+| `motivo_inativo` | não | um dos motivos do parâmetro `motivos_inativacao` |
 | `justificativa_inativo` | só se inativo | texto com 10+ caracteres |
 
 **A tag da planilha é a etiqueta física, e ela manda.** Escrevendo a tag inteira
@@ -481,6 +483,20 @@ depois do cadastro](#anexar-a-foto-depois-do-cadastro).
 situação, família ou texto livre; clique num instrumento para abrir a ficha com
 os arquivos e o histórico completo. A tela é atualizada ao vivo: quando o outro
 usuário registra uma calibração, a linha pisca aqui.
+
+**Editar dados** (na ficha) corrige o que foi digitado errado: descrição,
+fabricante, resolução, número de série, observações, nota fiscal, pedido de
+compra e localização. Cada campo alterado vira uma linha na trilha de auditoria,
+com o valor anterior, o e-mail e a data — e aparece logo abaixo, no histórico do
+próprio instrumento. A justificativa é opcional: numa correção cadastral, quem,
+quando e de→para já contam a história.
+
+O que **não** se corrige ali, e cada um por seu motivo: tag, família,
+classificação e data de entrada são a identidade do instrumento, e histórico,
+arquivos e empréstimos estão pendurados nela — não têm `GRANT` de update em lugar
+nenhum. Condição física passa por **Inativar/Reativar**, no Inventário, com
+motivo e justificativa obrigatórios. Situação de calibração passa pelos botões de
+**Situação de trabalho**, que exigem a rastreabilidade do pedido ao solicitar.
 
 O ciclo tem uma ordem, e a **rastreabilidade entra no começo dele**:
 

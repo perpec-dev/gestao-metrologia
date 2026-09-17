@@ -201,8 +201,12 @@ export const criarInstrumentoCompleto = async (instrumento, inspecao, calibracao
     p_calibracao:  calibracao || null
   }));
 
-export const atualizarInstrumento = async (id, campos) =>
-  ok(await sb.from('instrumentos').update(campos).eq('id', id).select().single());
+/** Correção de dado cadastral. Cada campo alterado vira uma linha de
+    auditoria; a lista do que pode ser alterado mora na RPC. */
+export const atualizarInstrumento = async (id, campos, justificativa = null) =>
+  ok(await sb.rpc('atualizar_dados_instrumento', {
+    p_instrumento_id: id, p_campos: campos, p_justificativa: justificativa || null
+  }));
 
 /**
  * Situação de trabalho declarada pelo usuário.
