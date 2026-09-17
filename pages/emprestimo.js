@@ -9,11 +9,10 @@
    ===================================================================== */
 import { esc, fmtDT, fmtData, hojeISO, p2, slug, chave, toast, msgErro, debounce,
          htmlVazio, htmlCarregando, validador, limparErros, delegar,
-         lerXLSX, lerPDFMake, baixarBlob, lembrar, lembrado } from '../utils.js';
+         lerXLSX, lerPDFMake, baixarBlob } from '../utils.js';
 import { listarInstrumentos, listarEmprestimosAbertos, registrarMovimentacao,
          registrarDevolucao, listarHistoricoEmprestimos, enviarArquivo,
-         listarEmailsSetor, cfgLista, ouvir, abrirArquivo,
-         pastaDoInstrumento } from '../supabase.js';
+         cfgLista, ouvir, abrirArquivo } from '../supabase.js';
 import { CONFIG } from '../config.js';
 import { badge, PODE_EMPRESTAR } from '../components/status-badge.js';
 import { abrirModal } from '../components/modal.js';
@@ -29,15 +28,6 @@ let raiz = null;
    O recorte é congelado no momento de consultar, não lido do formulário
    na hora de exportar — entre uma coisa e outra o usuário pode ter mexido
    nos filtros sem clicar em Consultar. */
-/* E-mail do responsável por setor, cadastrado na Administração.
-   Carregado uma vez por visita: é lista curta e quase estática. */
-let emailsSetor = new Map();
-
-/* Em aberto: a lista veio do servidor uma vez, e trocar a visualização
-   entre casual, posse e externo é recorte em memória. */
-let abertos = [];
-let filtroTipo = '';          // '' = todos
-
 let historico = [];
 let histConsultado = false;   // consulta vazia também conta: não repetir
 let tabelaHist = null;
@@ -46,8 +36,6 @@ let descHist = { titulo:'Histórico de empréstimos', linha:'' };
 export function destroy(){
   if (desligarRealtime){ desligarRealtime(); desligarRealtime = null; }
   instrumentos = []; escolhido = null; raiz = null;
-  emailsSetor = new Map();
-  abertos = [];
   historico = []; histConsultado = false; tabelaHist = null;
 }
 
@@ -55,7 +43,6 @@ export function destroy(){
 export async function render(container, params = []){
   raiz = container;
   const setores = cfgLista('setores');
-  filtroTipo = lembrado('filtros.emprestimoAberto', '') || '';
 
   container.innerHTML = `
     <div class="subtabs">
@@ -211,12 +198,6 @@ export async function render(container, params = []){
   }));
 
   instrumentos = await listarInstrumentos();
-
-  // Sem e-mail cadastrado a tela continua funcionando: só o botão de
-  // notificar fica desabilitado, explicando por quê.
-  try { emailsSetor = new Map((await listarEmailsSetor()).map(e => [e.setor, e])); }
-  catch (e){ console.warn('[metrologia] e-mails por setor:', e); }
-
   ligarAutocomplete(container);
   ligarFormulario(container);
   ligarHistorico(container);
@@ -301,7 +282,7 @@ function selecionar(i, container){
       </div>
     </div>
     ${liberado ? '' : `<div class="warn-box e" style="margin-top:10px">${motivoBloqueio(i)}</div>`}
-    ${i.standby && !i.data_inicio_relogio ? `<div class="warn-box w fixa" style="margin-top:10px">
+    ${i.standby && !i.data_inicio_relogio ? `<div class="warn-box w" style="margin-top:10px">
       Este instrumento está em <b>standby</b>. Ao registrar esta saída, o relógio de validade
       começa a contar e a próxima data de calibração passa a ser calculada a partir de hoje.</div>` : ''}`;
 
@@ -369,7 +350,7 @@ function ligarFormulario(container){
     try {
       const arq = inpTermo.files[0];
       const termo_path = arq
-        ? await enviarArquivo(CONFIG.BUCKETS.termos, arq, pastaDoInstrumento(escolhido.tag))
+        ? await enviarArquivo(CONFIG.BUCKETS.termos, arq, new Date().getFullYear() + '/' + escolhido.tag)
         : null;
 
       await registrarMovimentacao(escolhido.id, {
@@ -408,79 +389,25 @@ function limparSaida(container){
 
 /* ==================================================================== */
 /* EM ABERTO                                                            */
-/*                                                                      */
-/* Os três tipos de empréstimo são três assuntos diferentes: o casual   */
-/* volta no mesmo dia, a posse fica com o responsável por tempo         */
-/* indeterminado e o externo saiu da empresa. Quem vai cobrar devolução */
-/* olha um de cada vez — daí o seletor de visualização, com a contagem  */
-/* de cada tipo à vista mesmo quando não é o tipo escolhido.            */
 /* ==================================================================== */
 async function carregarAbertos(){
   if (!raiz) return;
   const el = raiz.querySelector('#listaAbertos');
   if (!el) return;
   try {
-    abertos = await listarEmprestimosAbertos();
-    pintarAbertos();
-  } catch (e){
-    el.innerHTML = `<div class="warn-box e">${esc(msgErro(e))}</div>`;
-  }
-}
+    const lista = await listarEmprestimosAbertos();
+    if (!lista.length){ el.innerHTML = htmlVazio('Nenhum instrumento emprestado no momento.'); return; }
 
-function pintarAbertos(){
-  if (!raiz) return;
-  const el = raiz.querySelector('#listaAbertos');
-  if (!el) return;
-
-  if (!abertos.length){
-    el.innerHTML = htmlVazio('Nenhum instrumento emprestado no momento.');
-    return;
-  }
-
-  /* Sem contagem no botão: o número de cada tipo já está na lista logo
-     abaixo, e três pastilhas com número viram ruído numa tela que já tem
-     indicador e aviso de atraso. O tipo que não tem nenhum empréstimo em
-     aberto fica desabilitado — é o suficiente para ninguém clicar num
-     recorte vazio. */
-  const conta = t => t ? abertos.filter(m => m.tipo === t).length : abertos.length;
-  const seletor = `
-    <div class="subtabs subtabs-filtro" id="tiposAberto">
-      ${[['','Todos'], ['casual','Casual'], ['posse','Posse'], ['externo','Externo']]
-        .map(([t, rot]) => `
-          <button class="subtab ${filtroTipo === t ? 'sel' : ''}" data-tipo="${t}"
-                  ${!conta(t) && t ? 'disabled' : ''}
-                  title="${!conta(t) && t ? 'Nenhum empréstimo deste tipo em aberto' : ''}"
-            >${esc(rot)}</button>`).join('')}
-    </div>`;
-
-  const lista = filtroTipo ? abertos.filter(m => m.tipo === filtroTipo) : abertos;
-
-  if (!lista.length){
-    el.innerHTML = seletor +
-      htmlVazio(`Nenhum empréstimo do tipo "${TIPO_ROTULO[filtroTipo] || filtroTipo}" em aberto.`);
-    ligarSeletorTipo(el);
-    return;
-  }
-
-  // O aviso de atraso acompanha o recorte na tela: cobrar "todos os
-  // setores" mostrando só uma parte da lista seria cobrar às escuras.
-  const atrasados = lista.filter(m => m.em_alerta);
-  const emAlerta = atrasados.length;
-
-  el.innerHTML = seletor + `
-      ${emAlerta ? `<div class="warn-box w fixa">
-        <b>${emAlerta}</b> empréstimo(s) passaram do prazo de alerta.
-        <div style="margin-top:9px">
-          <button class="btn btn-outline btn-sm" id="btNotificarTodos">
-            Notificar os setores responsáveis</button>
-        </div></div>` : ''}
+    const emAlerta = lista.filter(m => m.em_alerta).length;
+    el.innerHTML = `
+      ${emAlerta ? `<div class="warn-box w"><b>${emAlerta}</b> empréstimo(s) passaram do prazo de alerta.</div>` : ''}
       ${lista.map(m => `
         <div class="rec ${m.em_alerta ? 's-descalibrado' : 's-solicitado'}">
           <div class="rec-in">
             <div class="rec-grid">
               <div><div class="k">Tag</div><div class="v" style="font-family:'Courier New',monospace">${esc(m.tag)}</div></div>
               <div><div class="k">Instrumento</div><div class="v">${esc(m.descricao)}</div></div>
-              <div><div class="k">Tipo</div><div class="v">${esc(TIPO_ROTULO[m.tipo] || m.tipo)}</div></div>
+              <div><div class="k">Tipo</div><div class="v">${esc(m.tipo)}</div></div>
               <div><div class="k">Responsável</div><div class="v">${esc(m.responsavel)}</div></div>
               <div><div class="k">Setor</div><div class="v">${esc(m.setor)}</div></div>
               <div><div class="k">Entregue por</div><div class="v">${esc(m.entregue_por || '—')}</div></div>
@@ -493,187 +420,22 @@ function pintarAbertos(){
               <button class="btn btn-green btn-sm" data-devolver="${esc(m.id)}" data-tag="${esc(m.tag)}">
                 Registrar devolução</button>
               ${m.termo_path ? `<button class="btn btn-outline btn-sm" data-termo="${esc(m.termo_path)}">Ver termo</button>` : ''}
-              <button class="btn btn-outline btn-sm" data-notificar="${esc(m.id)}"
-                      ${emailsSetor.has(m.setor) ? '' : 'disabled'}
-                      title="${emailsSetor.has(m.setor)
-                        ? 'Abre o e-mail já preenchido para ' + esc(emailsSetor.get(m.setor).email)
-                        : 'Sem e-mail cadastrado para o setor ' + esc(m.setor) + '. Cadastre em Administração › E-mails por setor.'}">
-                ✉ Notificar responsável</button>
             </div>
           </div>
         </div>`).join('')}`;
 
-  el.querySelectorAll('[data-termo]').forEach(b => b.addEventListener('click', async () => {
-    try { await abrirArquivo(CONFIG.BUCKETS.termos, b.dataset.termo); }
-    catch (e){ toast(msgErro(e), 'error'); }
-  }));
+    el.querySelectorAll('[data-termo]').forEach(b => b.addEventListener('click', async () => {
+      try { await abrirArquivo(CONFIG.BUCKETS.termos, b.dataset.termo); }
+      catch (e){ toast(msgErro(e), 'error'); }
+    }));
 
-  el.querySelectorAll('[data-devolver]').forEach(b => b.addEventListener('click', () =>
-    modalDevolucao(b.dataset.devolver, b.dataset.tag)));
-
-  el.querySelectorAll('[data-notificar]').forEach(b => b.addEventListener('click', () => {
-    const m = lista.find(x => x.id === b.dataset.notificar);
-    if (m) abrirEmail([m]);
-  }));
-
-  const btTodos = el.querySelector('#btNotificarTodos');
-  if (btTodos) btTodos.addEventListener('click', () => modalNotificarTodos(atrasados));
-
-  ligarSeletorTipo(el);
-}
-
-/** Troca a visualização sem ir ao servidor: os dados já estão na mão. */
-function ligarSeletorTipo(el){
-  el.querySelectorAll('[data-tipo]').forEach(b => b.addEventListener('click', () => {
-    filtroTipo = b.dataset.tipo;
-    lembrar('filtros.emprestimoAberto', filtroTipo);
-    pintarAbertos();
-  }));
-}
-
-/* ==================================================================== */
-/* COBRANÇA DE DEVOLUÇÃO POR E-MAIL                                     */
-/*                                                                      */
-/* O e-mail sai do cliente de e-mail da própria pessoa, com o texto     */
-/* pronto: a mensagem chega assinada por quem cobra e a resposta volta  */
-/* para ela, não para uma caixa de sistema que ninguém lê. O que o      */
-/* sistema faz é o trabalho chato — juntar destinatário, tags, datas e  */
-/* prazos sem ninguém precisar copiar da tela.                          */
-/* ==================================================================== */
-
-/* O TEXTO do e-mail mora em CONFIG.EMAIL_COBRANCA (config.js), com os
-   marcadores documentados. Aqui fica só a montagem: escolher singular ou
-   plural, preencher os marcadores e juntar os pedaços. Quem quiser mudar
-   a redação não precisa abrir este arquivo. */
-
-/** Troca {marcadores} pelo valor. Marcador sem valor vira string vazia —
-    e a linha que ficar só com espaço em branco é descartada depois. */
-function preencher(modelo, valores){
-  return String(modelo || '').replace(/\{(\w+)\}/g,
-    (_, k) => (valores[k] == null ? '' : String(valores[k])));
-}
-
-/** Uma entrada da lista, por instrumento. Linha cujo dado opcional não
-    existe (prazo, devolução prevista) some inteira. */
-function linhaEmail(m){
-  const texto = preencher(CONFIG.EMAIL_COBRANCA.ITEM, {
-    tag: m.tag,
-    descricao: m.descricao,
-    responsavel_item: m.responsavel,
-    saida: fmtDT(m.data_saida),
-    dias: m.dias_fora,
-    prazo: m.prazo_alerta_dias ? ` (prazo: ${m.prazo_alerta_dias} dias)` : '',
-    prevista: m.data_prevista_retorno ? fmtDT(m.data_prevista_retorno) : ''
-  });
-  // Sem devolução prevista, a linha "Devolução prevista:" fica pendurada
-  // sem valor. Uma linha que terminou em ':' perdeu o dado dela.
-  return texto.split('\n').filter(l => l.trim() && !/[:·]\s*$/.test(l.trim())).join('\n');
-}
-
-function montarEmail(setor, itens){
-  const T       = CONFIG.EMAIL_COBRANCA;
-  const contato = emailsSetor.get(setor);
-  const plural  = itens.length > 1;
-
-  const valores = {
-    responsavel: contato?.responsavel || '',
-    setor,
-    qtd: itens.length,
-    tags: itens.map(m => m.tag).join(', '),
-    assinatura: meuNome() || 'Metrologia',
-    empresa: CONFIG.EMPRESA,
-    documento: CONFIG.APP_REF
-  };
-
-  const assunto = preencher(plural ? T.ASSUNTO_N : T.ASSUNTO_1, valores);
-
-  const corpo = [
-    preencher(contato?.responsavel ? T.SAUDACAO : T.SAUDACAO_SEM, valores),
-    '',
-    preencher(plural ? T.ABERTURA_N : T.ABERTURA_1, valores),
-    '',
-    itens.map(linhaEmail).join('\n\n'),
-    '',
-    preencher(T.FECHAMENTO, valores),
-    '',
-    preencher(T.ASSINATURA, valores)
-  ].join('\n');
-
-  return { para: contato?.email || '', assunto, corpo };
-}
-
-/** Abre o cliente de e-mail com tudo preenchido. */
-function abrirEmail(itens){
-  const setor = itens[0].setor;
-  if (!emailsSetor.has(setor)){
-    toast(`Sem e-mail cadastrado para o setor ${setor}. Peça ao administrador para cadastrar em Administração › E-mails por setor.`, 'error');
-    return;
+    el.querySelectorAll('[data-devolver]').forEach(b => b.addEventListener('click', () =>
+      modalDevolucao(b.dataset.devolver, b.dataset.tag)));
+  } catch (e){
+    el.innerHTML = `<div class="warn-box e">${esc(msgErro(e))}</div>`;
   }
-  const { para, assunto, corpo } = montarEmail(setor, itens);
-  // encodeURIComponent, e não encodeURI: o corpo tem quebras de linha,
-  // acento e "&" — encodeURI deixaria o "&" partir a URL ao meio.
-  window.location.href = `mailto:${encodeURIComponent(para)}` +
-    `?subject=${encodeURIComponent(assunto)}&body=${encodeURIComponent(corpo)}`;
-  toast(`E-mail para ${setor} montado no seu cliente de e-mail.`, 'success');
 }
 
-/** Um e-mail por setor: cobrar cinco instrumentos em cinco mensagens
-    separadas é o jeito mais rápido de ninguém responder nenhuma. */
-function modalNotificarTodos(atrasados){
-  const porSetor = new Map();
-  atrasados.forEach(m => {
-    if (!porSetor.has(m.setor)) porSetor.set(m.setor, []);
-    porSetor.get(m.setor).push(m);
-  });
-
-  const grupos = [...porSetor.entries()].sort((a,b) => b[1].length - a[1].length);
-  const semEmail = grupos.filter(([setor]) => !emailsSetor.has(setor));
-
-  abrirModal({
-    titulo: 'Notificar setores responsáveis',
-    largo: true,
-    corpo: `
-      <div class="warn-box i">
-        Um e-mail por setor, com todos os instrumentos atrasados daquele setor.
-        Cada botão abre a mensagem pronta no seu cliente de e-mail — você confere
-        e envia.
-      </div>
-      ${semEmail.length ? `<div class="warn-box w fixa">
-        <b>${semEmail.length}</b> setor(es) sem e-mail cadastrado:
-        ${semEmail.map(([s]) => esc(s)).join(', ')}.
-        Cadastre em <b>Administração › E-mails por setor</b>.</div>` : ''}
-
-      ${grupos.map(([setor, itens]) => {
-        const contato = emailsSetor.get(setor);
-        return `
-        <div class="rec ${contato ? 's-solicitado' : 's-descalibrado'}" style="margin-bottom:10px">
-          <div class="rec-in">
-            <div class="rec-grid">
-              <div><div class="k">Setor</div><div class="v">${esc(setor)}</div></div>
-              <div><div class="k">Instrumentos</div><div class="v">${itens.length}</div></div>
-              <div><div class="k">Destinatário</div><div class="v">${
-                contato ? esc(contato.email) : '<span style="color:var(--status-descalibrado)">não cadastrado</span>'}</div></div>
-              <div><div class="k">Responsável</div><div class="v">${esc(contato?.responsavel || '—')}</div></div>
-            </div>
-            <div style="margin-top:10px;font-size:12.5px;color:var(--muted);line-height:1.6">
-              ${itens.map(m => `${esc(m.tag)} · ${esc(m.responsavel)} · ${esc(m.dias_fora)} d`).join('<br>')}
-            </div>
-            <div class="rec-acts">
-              <button class="btn btn-outline btn-sm" data-setor="${esc(setor)}"
-                      ${contato ? '' : 'disabled'}>✉ Abrir e-mail para ${esc(setor)}</button>
-            </div>
-          </div>
-        </div>`;
-      }).join('')}`,
-    acoes: [{ rotulo:'Fechar', classe:'btn-outline', onClick: f => f() }],
-    aoAbrir: body => {
-      body.querySelectorAll('[data-setor]').forEach(b => b.addEventListener('click', () =>
-        abrirEmail(porSetor.get(b.dataset.setor))));
-    }
-  });
-}
-
-/* ==================================================================== */
 function modalDevolucao(movId, tag){
   abrirModal({
     titulo: `Devolução — ${tag}`,
@@ -973,7 +735,7 @@ async function exportarHistPDF(container){
       footer: (pagina, total) => ({
         margin: [28, 8, 28, 0],
         columns: [
-          { text:`${CONFIG.EMPRESA}  •  ${CONFIG.APP_REF}`, fontSize:6.5, italics:true, color:'#AAA5A0' },
+          { text:`${CONFIG.EMPRESA}  •  ${CONFIG.DOC_REF}`, fontSize:6.5, italics:true, color:'#AAA5A0' },
           { text:`Página ${pagina} de ${total}`, fontSize:6.5, color:'#AAA5A0', alignment:'right' }
         ]
       }),

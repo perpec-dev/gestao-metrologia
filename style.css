@@ -50,40 +50,12 @@
   --status-solicitado:#3D5AC0;          --status-solicitado-bg:#EDF0FD;
   --status-em-calibracao:#6D4AAE;       --status-em-calibracao-bg:#F2EEFB;
   --status-standby-pausado:#6A7480;     --status-standby-bg:#F1F3F5;
-  /* Referência: teal. Longe do azul de 'solicitado' e do roxo de
-     'em calibração externa' também sob deuteranopia — e sem competir
-     com o vermelho, porque não é pendência: é classificação. */
-  --status-referencia:#1F7A8C;          --status-referencia-bg:#E8F3F6;
 
-  /* ---------------------------------------------------------------
-     TINTA DE GRÁFICO — paleta institucional Perpec.
-
-     Aqui não há semântica: são séries e eixos, e por isso saem direto
-     da paleta da marca, sem tom inventado no meio do caminho.
-
-       --serie    Pantone 5265 C  #3F415B   série única (as barras)
-       --serie-2  Pantone 179 C   #E6332C   linha acumulada do Pareto
-       --grid     Pantone 663 C   #EDEDED   grade, fio de cabelo
-       --eixo     Pantone 446 C   #3F3F3E   linha de base (o zero)
-
-     A dupla azul-marinho + vermelho vivo é o par de maior separação da
-     paleta: barra e linha acumulada nunca se confundem, nem impressas
-     em preto e branco, porque a diferença de luminosidade é grande.
-
-     O SEMÁFORO (--status-*, mais acima) NÃO usa esta paleta, e não é
-     esquecimento: verde e âmbar não existem no padrão Perpec, e sem eles
-     não há como dizer "calibrado", "vencendo" e "descalibrado" pela cor.
-     Ali a cor carrega significado; aqui, só identidade.
-     --------------------------------------------------------------- */
-  --grid:#EDEDED; --eixo:#3F3F3E; --serie:#3F415B; --serie-2:#E6332C;
+  /* Tinta de gráfico — recessiva por definição. */
+  --grid:#EEEAE4; --eixo:#CFC8BF; --serie:#3D5AC0; --serie-2:#7C746D;
 }
 
 html{-webkit-text-size-adjust:100%}
-/* `hidden` precisa vencer sempre. Sem isto, .field{display:flex} e
-   .card sobrepõem o atributo e o campo escondido pelo JS continua na
-   tela — o que, num formulário que muda conforme a classificação do
-   instrumento, é a diferença entre esconder e fingir que escondeu. */
-[hidden]{display:none!important}
 body{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;background:var(--bg);color:var(--text);
      min-height:100vh;-webkit-font-smoothing:antialiased;line-height:1.5}
 a{color:var(--red);text-decoration:none}
@@ -214,15 +186,6 @@ a:hover{text-decoration:underline}
 .subtab.sel{color:var(--dark);background:var(--surface);box-shadow:var(--sh-1)}
 .pane{display:none}
 .pane.on{display:block;animation:aparece .22s var(--saida)}
-
-/* Seletor de visualização DENTRO de um painel (ex.: Empréstimo › Em
-   aberto, por tipo). Mesmo controle segmentado das subabas; o filete
-   vermelho embaixo do escolhido é o que o distingue da navegação de
-   verdade, que fica acima dele. */
-.subtabs-filtro{margin-bottom:1rem}
-.subtabs-filtro .subtab.sel{box-shadow:var(--sh-1),inset 0 -2px 0 var(--red)}
-.subtab:disabled{opacity:.42;cursor:not-allowed}
-.subtab:disabled:hover{color:var(--muted);background:none}
 
 /* =====================================================================
    CARTÕES
@@ -363,7 +326,6 @@ details.card[open] .chevron svg{transform:rotate(180deg);stroke:var(--red)}
 .bdg.s-solicitado{color:var(--status-solicitado)}
 .bdg.s-em_calibracao_externa{color:var(--status-em-calibracao)}
 .bdg.s-standby_pausado{color:var(--status-standby-pausado)}
-.bdg.s-referencia{color:var(--status-referencia)}
 .bdg.s-ativo{color:var(--status-calibrado)}
 .bdg.s-inativo{color:var(--muted)}
 .bdg.neutro{color:var(--muted)}
@@ -380,42 +342,6 @@ details.card[open] .chevron svg{transform:rotate(180deg);stroke:var(--red)}
 .warn-box.w{border-color:var(--status-proximo-vencimento);background:var(--status-proximo-bg)}
 .warn-box.e{border-color:var(--status-descalibrado);background:var(--status-descalibrado-bg)}
 .warn-box.g{border-color:var(--status-calibrado);background:var(--status-calibrado-bg)}
-
-/* ---------------------------------------------------------------------
-   DICA — a tarja explicativa guardada atrás de uma lâmpada.
-
-   Fechada, é uma pastilha discreta com o ASSUNTO escrito: ocupa uma
-   linha curta e some da leitura de quem já sabe. Aberta, vira a mesma
-   tarja de antes, com a cor de sempre. Duas lâmpadas seguidas ficam lado
-   a lado porque a pastilha é inline-block — abrir uma delas devolve o
-   bloco inteiro. Conversão em components/dicas.js.
-   --------------------------------------------------------------------- */
-.dica{display:inline-block;max-width:100%;margin:0 6px 12px 0;vertical-align:top;
-      border:1px solid var(--border);border-radius:var(--r);background:var(--surface);
-      transition:border-color .16s,background .16s}
-.dica[open]{display:block;margin-right:0;border-left-width:3px}
-.dica > summary{display:flex;align-items:center;justify-content:center;cursor:pointer;
-                list-style:none;padding:5px 8px;color:var(--muted);user-select:none;
-                border-radius:calc(var(--r) - 1px);transition:color .14s,background .14s}
-.dica > summary::-webkit-details-marker{display:none}
-.dica > summary:hover{color:var(--text);background:var(--surface2)}
-.dica .lamp{width:15px;height:15px;flex-shrink:0;stroke:currentColor;fill:none;stroke-width:1.8;
-            stroke-linecap:round;stroke-linejoin:round}
-/* Aberta, a lâmpada acende: o mesmo desenho, agora preenchido. */
-.dica[open] .lamp{fill:currentColor;fill-opacity:.16;stroke-width:2}
-.dica-corpo{padding:0 14px 12px 13px;margin-top:-2px;font-size:13px;line-height:1.55;
-            color:var(--text2);animation:entra .2s var(--saida)}
-.dica-corpo b{color:var(--dark);font-weight:700}
-.dica-corpo code{font-family:ui-monospace,"Cascadia Mono",Consolas,monospace;font-size:12px;
-                 background:var(--surface3);padding:1px 5px;border-radius:4px}
-.dica-corpo > :not(:first-child){margin-top:8px}
-
-.dica.d-i > summary{color:var(--status-solicitado)}
-.dica.d-i[open]{border-color:var(--status-solicitado);background:var(--status-solicitado-bg)}
-.dica.d-i[open] > summary:hover{background:transparent}
-.dica.d-w > summary{color:var(--status-proximo-vencimento)}
-.dica.d-w[open]{border-color:var(--status-proximo-vencimento);background:var(--status-proximo-bg)}
-.dica.d-w[open] > summary:hover{background:transparent}
 
 .empty-state{text-align:center;padding:3rem 1rem;color:var(--muted);font-size:13.5px;
              border:1px dashed var(--border2);border-radius:var(--r-lg);background:var(--surface2)}
@@ -447,7 +373,6 @@ details.card[open] .chevron svg{transform:rotate(180deg);stroke:var(--red)}
 .kpi.c-solicitado::after{background:var(--status-solicitado)}      .kpi.c-solicitado .k{color:var(--status-solicitado)}
 .kpi.c-externa::after{background:var(--status-em-calibracao)}      .kpi.c-externa .k{color:var(--status-em-calibracao)}
 .kpi.c-standby::after{background:var(--status-standby-pausado)}    .kpi.c-standby .k{color:var(--status-standby-pausado)}
-.kpi.c-referencia::after{background:var(--status-referencia)}      .kpi.c-referencia .k{color:var(--status-referencia)}
 .kpi.sel{border-color:var(--red);box-shadow:0 0 0 3px rgba(192,57,43,.1)}
 .kpi.estatico{cursor:default}
 .kpi.estatico:hover{transform:none;box-shadow:var(--sh-1);border-color:var(--border)}
@@ -455,46 +380,10 @@ details.card[open] .chevron svg{transform:rotate(180deg);stroke:var(--red)}
 /* =====================================================================
    GRÁFICOS
    ===================================================================== */
-/* ---------------------------------------------------------------------
-   GRADE DOS GRÁFICOS — quatro cartas, sempre em linha cheia.
-
-   Com `auto-fit`, a largura da janela decidia quantas colunas cabiam: em
-   1344px davam três, e a quarta carta caía sozinha numa segunda linha,
-   deixando dois vãos vazios do tamanho de um gráfico. Aqui a contagem é
-   declarada, e só em números que DIVIDEM quatro — 2 ou 1. Nunca três:
-   linha quebrada não acontece por acidente de viewport.
-
-   Duas colunas, e não quatro, porque o texto do SVG escala junto com o
-   desenho: em quatro colunas o rótulo de eixo cairia para ~8px. Em 2×2
-   cada gráfico é lido confortavelmente, e as quatro cartas fecham duas
-   linhas cheias.
-
-   `grid-auto-rows:1fr` iguala as alturas das linhas, e o cartão em
-   coluna flex com a tabela-gêmea empurrada para baixo (`margin-top:auto`)
-   alinha o rodapé de todas as cartas. É o que faz quatro conteúdos de
-   tamanhos diferentes parecerem do mesmo tamanho.
-   --------------------------------------------------------------------- */
-.graficos{display:grid;grid-template-columns:1fr;grid-auto-rows:1fr;gap:16px;margin-bottom:1.5rem}
-@media(min-width:820px){.graficos{grid-template-columns:repeat(2,1fr)}}
-.graficos .card{margin-bottom:0;display:flex;flex-direction:column}
-.graficos .card-body{flex:1;display:flex;flex-direction:column}
-/* Sem teto de largura: o gráfico ocupa a carta inteira. O texto do SVG
-   escalaria junto com o desenho, então o desenho é gerado em escala 1:1
-   — a largura real é medida antes e vira o viewBox. Ver moldura() em
-   components/graficos.js. */
-.grafico{position:relative;display:flex;flex-direction:column;flex:1;width:100%}
+.graficos{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:16px;margin-bottom:1.5rem}
+.graficos .card{margin-bottom:0}
+.grafico{position:relative}
 .grafico svg{display:block;width:100%;height:auto;overflow:visible}
-
-/* O anel é a exceção: círculo não estica. Numa carta larga quem ocupa a
-   sobra é a legenda, que vai para o lado dele — e a carta economiza seis
-   linhas de altura. Estreitou, o flex quebra e volta a empilhar. */
-.arco-wrap{display:flex;align-items:center;gap:20px;flex-wrap:wrap}
-.arco-wrap > svg{flex:0 1 340px;max-width:340px}
-.arco-wrap > .g-legenda{flex:1 1 210px;margin-top:0;padding-top:0;border-top:none}
-@media(max-width:600px){
-  .arco-wrap > svg{flex-basis:100%;max-width:none}
-  .arco-wrap > .g-legenda{margin-top:6px;padding-top:12px;border-top:1px solid var(--hair)}
-}
 .g-sub{font-size:11.5px;color:var(--muted);line-height:1.45}
 .g-eixo{font-size:10.5px;fill:var(--muted);font-variant-numeric:tabular-nums}
 .g-valor{font-size:11px;font-weight:700;fill:var(--text2);font-variant-numeric:tabular-nums}
@@ -502,10 +391,6 @@ details.card[open] .chevron svg{transform:rotate(180deg);stroke:var(--red)}
 .g-base{stroke:var(--eixo);stroke-width:1}
 .g-hero{font-size:35px;font-weight:700;fill:var(--dark);letter-spacing:-.03em}
 .g-hero-sub{font-size:11px;fill:var(--muted);font-weight:650}
-/* Mesmo número-herói, fora do SVG: o gráfico de inativos abre com o
-   percentual em HTML, ao lado da frase que o explica. */
-.g-hero-num{font-size:32px;font-weight:700;color:var(--dark);letter-spacing:-.03em;
-            line-height:1;font-variant-numeric:tabular-nums;flex-shrink:0}
 
 /* Foco por realce: ao passar o mouse, as demais marcas recuam.
    O alvo é a faixa inteira, nunca um alvo de precisão. */
@@ -538,11 +423,8 @@ details.card[open] .chevron svg{transform:rotate(180deg);stroke:var(--red)}
 .g-dica.on{opacity:1;transform:translate(-50%,-135%) scale(1)}
 .g-dica .l2{font-weight:500;color:#C9BCB9;display:block}
 
-/* Tabela-gêmea: todo valor é legível sem depender de cor.
-   `margin-top:auto` a mantém colada no rodapé do cartão — é ela que
-   alinha a base das quatro cartas quando o conteúdo tem alturas
-   diferentes. */
-.g-tabela{margin-top:auto;padding-top:10px;border-top:1px solid var(--hair)}
+/* Tabela-gêmea: todo valor é legível sem depender de cor. */
+.g-tabela{margin-top:12px;border-top:1px solid var(--hair);padding-top:10px}
 .g-tabela summary{font-size:11.5px;font-weight:650;color:var(--muted);cursor:pointer;list-style:none;
                   transition:color .14s}
 .g-tabela summary:hover{color:var(--red)}
@@ -570,7 +452,6 @@ details.card[open] .chevron svg{transform:rotate(180deg);stroke:var(--red)}
 .rec.s-solicitado{border-left-color:var(--status-solicitado)}
 .rec.s-em_calibracao_externa{border-left-color:var(--status-em-calibracao)}
 .rec.s-standby_pausado{border-left-color:var(--status-standby-pausado)}
-.rec.s-referencia{border-left-color:var(--status-referencia)}
 .rec-in{padding:12px 14px}
 .rec-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px 18px;font-size:13px}
 .rec-grid .k{font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
@@ -605,7 +486,6 @@ table.tbl tbody tr.l-descalibrado          td:first-child{box-shadow:inset 3px 0
 table.tbl tbody tr.l-solicitado            td:first-child{box-shadow:inset 3px 0 0 var(--status-solicitado)}
 table.tbl tbody tr.l-em_calibracao_externa td:first-child{box-shadow:inset 3px 0 0 var(--status-em-calibracao)}
 table.tbl tbody tr.l-standby_pausado       td:first-child{box-shadow:inset 3px 0 0 var(--status-standby-pausado)}
-table.tbl tbody tr.l-referencia            td:first-child{box-shadow:inset 3px 0 0 var(--status-referencia)}
 table.tbl tbody tr.inativa td{color:var(--muted)}
 table.tbl td.mono{white-space:nowrap}
 table.tbl td.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
@@ -678,41 +558,6 @@ table.tbl input[type=checkbox]{width:16px;height:16px;accent-color:var(--red);cu
 .tl-autor{font-size:11.5px;color:var(--muted);margin-top:4px}
 
 /* =====================================================================
-   ARQUIVOS — a pasta de cada equipamento
-
-   Pasta é metáfora de arquivo físico, e é assim que ela se comporta: o
-   cartão fechado mostra a etiqueta (tag, instrumento e o que tem
-   dentro); aberto, as subpastas por tipo de documento. Nada de miniatura
-   ou grade de ícones — o que se procura aqui é um documento específico,
-   não uma galeria.
-   ===================================================================== */
-.pasta > summary .mono{margin-right:2px}
-.arqs{display:flex;flex-direction:column;gap:14px}
-.arq-grupo{border:1px solid var(--border);border-radius:var(--r);background:var(--surface2);
-           overflow:hidden}
-.arq-grupo-cab{display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--surface3);
-               font-size:12px;color:var(--text2);border-bottom:1px solid var(--border)}
-.arq-grupo-cab svg{width:14px;height:14px;stroke:var(--red);fill:none;stroke-width:1.9;
-                   stroke-linecap:round;stroke-linejoin:round;flex-shrink:0}
-.arq-grupo-cab b{font-size:12px;font-weight:700;color:var(--dark);letter-spacing:.01em}
-.arq-qtd{margin-left:auto;font-size:11px;font-weight:700;color:var(--muted);background:var(--surface);
-         border:1px solid var(--border);border-radius:99px;padding:1px 8px;
-         font-variant-numeric:tabular-nums}
-.arq-item{display:flex;align-items:center;gap:12px;padding:9px 12px;background:var(--surface);
-          border-top:1px solid var(--hair)}
-.arq-item:first-of-type{border-top:none}
-.arq-txt{min-width:0;flex:1}
-.arq-nome{font-size:13px;font-weight:600;color:var(--text);word-break:break-word}
-.arq-meta{font-size:11px;color:var(--muted);margin-top:2px;word-break:break-all}
-.arq-path{font-family:ui-monospace,"Cascadia Mono",Consolas,monospace;font-size:10.5px}
-/* Ações da pasta (anexar foto): alinhadas à direita, acima do conteúdo —
-   longe do "Abrir" de cada arquivo, que é o gesto de leitura. */
-.arq-acoes{display:flex;justify-content:flex-end;flex-wrap:wrap;gap:8px;margin:-2px 0 10px}
-/* Pasta sem foto: o aviso é do INVENTÁRIO, não do arquivo — é por ela que
-   se reconhece o instrumento na conferência. */
-.sem-foto{font-size:11.5px;font-weight:650;color:var(--status-proximo-vencimento);align-self:center}
-
-/* =====================================================================
    AUTOCOMPLETE
    ===================================================================== */
 .ac{position:relative;z-index:30}
@@ -761,11 +606,6 @@ table.tbl input[type=checkbox]{width:16px;height:16px;accent-color:var(--red);cu
 
 @media print{
   .sticky-top,.act-bar,.filtros,.btn,.tabs,.sel-bar{display:none!important}
-  /* No papel não há clique: a dica que ficou fechada não pode virar uma
-     pastilha sem conteúdo. Melhor esforço — o navegador ainda decide se
-     revela o miolo de um <details> fechado. */
-  .dica{display:block;border-color:var(--border)}
-  .dica > .dica-corpo{display:block}
   body{background:#fff}
   .card{break-inside:avoid;box-shadow:none;border-color:#ccc;animation:none}
 }

@@ -1,26 +1,19 @@
 /* =====================================================================
-   CADASTRO — a única porta de entrada do acervo. Quatro abas:
-     a) Novo instrumento          (um a um, com ou sem documento de entrada)
+   CADASTRO — quatro abas:
+     a) Instrumento avulso        (sem nota fiscal / pedido de compra)
      b) Import de instrumentos    (Excel -> prévia -> confirmar)
      c) Famílias                  (nova família + alterar periodicidade)
      d) Import de famílias        (Excel -> prévia -> confirmar)
-
-   A aba "Recebimento" foi absorvida aqui. O que a separava era a
-   documentação de entrada (nota fiscal e pedido de compra), que agora é
-   um bloco opcional do formulário: preencheu, o instrumento é gravado
-   com origem 'recebimento'; deixou em branco, com origem 'avulso'.
-   Duas telas quase idênticas viravam dúvida sobre qual usar — e o
-   histórico do acervo ficava partido em duas portas.
    ===================================================================== */
 import { esc, chave, hojeISO, fmtData, toast, msgErro, lerXLSX, htmlVazio,
          validador, limparErros, baixarBlob } from '../utils.js';
 import { badge, badgeCondicao } from '../components/status-badge.js';
 import { listarFamilias, listarTodasFases, criarFamilia, alterarPeriodicidade,
          criarInstrumentoCompleto, definirStatusWorkflow, inativarInstrumento } from '../supabase.js';
+import { souAdmin } from '../auth.js';
 import { htmlFormInstrumento, ligarFormInstrumento,
          coletarFormInstrumento, limparFormInstrumento } from '../components/form-instrumento.js';
 import { abrirModal, pedirJustificativa, confirmar } from '../components/modal.js';
-import { irPara } from '../router.js';
 
 let familias = [];
 
@@ -73,7 +66,7 @@ export async function render(container){
 
   container.innerHTML = `
     <div class="subtabs">
-      <button class="subtab sel" data-pane="avulso">Novo instrumento</button>
+      <button class="subtab sel" data-pane="avulso">Instrumento avulso</button>
       <button class="subtab" data-pane="impInstr">Importar instrumentos</button>
       <button class="subtab" data-pane="familias">Famílias</button>
       <button class="subtab" data-pane="impFam">Importar famílias</button>
@@ -96,41 +89,29 @@ export async function render(container){
 }
 
 /* ==================================================================== */
-/* a) NOVO INSTRUMENTO                                                  */
+/* a) INSTRUMENTO AVULSO                                                */
 /* ==================================================================== */
 async function abaAvulso(el){
   el.innerHTML = `
     <div class="warn-box i">
-      Vale para os dois casos: instrumento <b>comprado agora</b> (preencha o documento
-      de entrada) e instrumento que <b>já estava na empresa</b> (deixe o documento em
-      branco). A classificação no topo decide o resto do formulário.
+      Use esta aba para instrumentos que já estavam na empresa antes do sistema,
+      ou que entraram sem nota fiscal. Para compra nova, use <b>Recebimento</b>.
     </div>
     <form id="formAvulso" novalidate>
-      ${htmlFormInstrumento({ comDocumentos:true, comInspecao:true, comCertificado:true })}
+      ${htmlFormInstrumento({ comNotaFiscal:false, comInspecao:true, comCertificado:true })}
       <div class="act-bar">
-        <div style="font-size:12.5px;color:var(--muted);max-width:520px">
-          A tag definitiva é confirmada pelo servidor no momento de salvar.
-          Se outro usuário cadastrar um instrumento da mesma família antes de você,
-          a sua tag avança sozinha — sem duplicar.
-        </div>
+        <div class="act-group"><button type="button" class="btn btn-outline" id="btLimparAv">Limpar</button></div>
         <div class="act-group">
-          <button type="button" class="btn btn-outline" id="btLimparAv">Limpar</button>
           <button type="submit" class="btn btn-red btn-xl" id="btSalvarAv" style="width:auto;min-width:260px">
             CADASTRAR INSTRUMENTO</button>
         </div>
       </div>
-    </form>
-    <div id="ultimosCad"></div>`;
+    </form>`;
 
   const form = el.querySelector('#formAvulso');
   await ligarFormInstrumento(form, { comCertificado:true });
 
-  const registrados = [];
-
-  el.querySelector('#btLimparAv').addEventListener('click', () => {
-    limparFormInstrumento(form);
-    form.querySelector('#fTipo').focus();
-  });
+  el.querySelector('#btLimparAv').addEventListener('click', () => limparFormInstrumento(form));
 
   form.addEventListener('submit', async e => {
     e.preventDefault();
@@ -138,54 +119,15 @@ async function abaAvulso(el){
     bt.disabled = true; bt.textContent = 'SALVANDO…';
     try {
       const dados = await coletarFormInstrumento(form, {
-        comDocumentos:true, comInspecao:true, comCertificado:true
+        comNotaFiscal:false, comInspecao:true, comCertificado:true, origem:'avulso'
       });
       if (!dados) return;
       const novo = await criarInstrumentoCompleto(dados.instrumento, dados.inspecao, dados.calibracao);
-
-      registrados.unshift({
-        tag: novo.tag, descricao: novo.descricao, id: novo.id,
-        referencia: novo.tipo === 'REFERENCIA',
-        calibrado: !!dados.calibracao,
-        recebimento: novo.origem === 'recebimento'
-      });
-      pintarUltimos();
       toast('Instrumento cadastrado. Tag ' + novo.tag, 'success');
       limparFormInstrumento(form);
-      window.scrollTo({ top:0, behavior:'smooth' });
     } catch (err){ toast(msgErro(err), 'error'); }
     finally { bt.disabled = false; bt.textContent = 'CADASTRAR INSTRUMENTO'; }
   });
-
-  /* Recibo da sessão: quem cadastra dez instrumentos seguidos precisa
-     conferir o que já entrou sem sair da tela. */
-  function pintarUltimos(){
-    const alvo = el.querySelector('#ultimosCad');
-    if (!registrados.length){ alvo.innerHTML = ''; return; }
-    alvo.innerHTML = `
-      <div class="card">
-        <div class="card-head"><h2>Cadastrados nesta sessão</h2>
-          <span class="right">${registrados.length}</span></div>
-        <div class="card-body tight">
-          ${registrados.map(r => `
-            <div class="rec s-${r.referencia ? 'referencia' : (r.calibrado ? 'calibrado' : 'descalibrado')}">
-              <div class="rec-in"><div class="rec-grid">
-                <div><div class="k">Tag</div><div class="v" style="font-family:'Courier New',monospace">${esc(r.tag)}</div></div>
-                <div><div class="k">Descrição</div><div class="v">${esc(r.descricao)}</div></div>
-                <div><div class="k">Entrada</div><div class="v">${r.recebimento ? 'Recebimento (com documento)' : 'Acervo existente'}</div></div>
-                <div><div class="k">Situação</div><div class="v">${
-                  r.referencia ? 'Referência — sem controle de validade'
-                  : r.calibrado ? 'Calibrado' : 'Descalibrado — sem certificado'}</div></div>
-                <div style="display:flex;align-items:flex-end">
-                  <button class="btn btn-outline btn-sm" data-abrir="${esc(r.id)}">Abrir ficha</button>
-                </div>
-              </div></div>
-            </div>`).join('')}
-        </div>
-      </div>`;
-    alvo.querySelectorAll('[data-abrir]').forEach(b =>
-      b.addEventListener('click', () => irPara('calibracao', b.dataset.abrir)));
-  }
 }
 
 /* ==================================================================== */
@@ -198,21 +140,9 @@ function abaImportInstrumentos(el){
       <div class="card-body">
         <div class="warn-box i">
           <b>Obrigatórias:</b> <code>codigo</code> (código da família, ex. PAQ) e <code>descricao</code>.<br>
-          <b>Opcionais:</b> <code>familia</code> (informativo), <code>rastreabilidade</code>
-          (obrigatória quando <code>status</code> for <code>solicitado</code>), <code>fabricante</code>,
-          <code>resolucao</code>, <code>classificacao</code> (TMMDE ou REFERENCIA — a coluna
-          antiga <code>tipo</code> continua valendo), <code>num_serie</code>,
-          <code>observacoes</code>, <code>data_entrada</code> (AAAA-MM-DD),
-          <code>nota_fiscal</code>, <code>pedido_compra</code>, <code>localizacao</code>,
-          <code>standby</code> (sim/não).<br>
-          Linha com <code>nota_fiscal</code> ou <code>pedido_compra</code> entra como
-          <b>recebimento</b>; sem elas, como acervo já existente.
-        </div>
-        <div class="warn-box i">
-          <b>Instrumento de referência.</b> Padrão de aferição não tem exigência de calibração:
-          <code>status</code>, <code>data_calibracao</code> e <code>standby</code> são ignorados
-          nessas linhas. Use <code>observacoes</code> para rastreabilidade, laboratório,
-          certificado e incerteza.
+          <b>Opcionais:</b> <code>familia</code> (informativo), <code>fabricante</code>,
+          <code>resolucao</code>, <code>tipo</code> (TMMDE ou REFERENCIA), <code>num_serie</code>,
+          <code>data_entrada</code> (AAAA-MM-DD), <code>localizacao</code>, <code>standby</code> (sim/não).
         </div>
         <div class="warn-box w">
           <b>Situação de calibração</b> — coluna <code>status</code>:
@@ -220,15 +150,13 @@ function abaImportInstrumentos(el){
           <code>em calibracao externa</code>. Em branco, entra como <b>descalibrado</b>.<br>
           Para <code>calibrado</code> é obrigatório preencher <code>data_calibracao</code> (AAAA-MM-DD) —
           sem data não existe validade, e o sistema calcula a próxima sozinho pela periodicidade da família.
-          O certificado em PDF é anexado depois, na tela de Calibração.<br>
-          Para <code>solicitado</code> é obrigatório preencher <code>rastreabilidade</code> — o número
-          do pedido, requisição ou ordem de serviço que identifica a solicitação.<br><br>
+          O certificado em PDF é anexado depois, na tela de Calibração.<br><br>
           <b>Condição física</b> — coluna <code>situacao</code>: <code>ativo</code> ou <code>inativo</code>
           (aceita também <code>sucateado</code>, <code>vago</code>, <code>não entregue</code> e
           <code>danificado</code>, que já viram o motivo). Em branco, entra como <b>ativo</b>.
-          Linhas inativas exigem <code>justificativa_inativo</code> com 10+ caracteres e não podem
-          vir com a calibração solicitada ou em laboratório — inativar no meio da solicitação a
-          abandona sem cancelá-la.
+          Linhas inativas exigem <code>justificativa_inativo</code> e ${souAdmin()
+            ? 'só você, como administrador, pode importá-las.'
+            : '<b>papel de administrador</b> — no seu perfil elas serão recusadas na prévia.'}
         </div>
         <div class="g3">
           <div class="field" id="wArqInstr">
@@ -261,22 +189,21 @@ function abaImportInstrumentos(el){
 
   el.querySelector('#btModeloInstr').addEventListener('click', () =>
     modeloExcel('modelo-instrumentos',
-      ['codigo','familia','descricao','fabricante','resolucao','classificacao','num_serie',
-       'observacoes','data_entrada','nota_fiscal','pedido_compra','localizacao','standby',
-       'status','data_calibracao','rastreabilidade','situacao','justificativa_inativo'],
+      ['codigo','familia','descricao','fabricante','resolucao','tipo','num_serie',
+       'data_entrada','localizacao','standby','status','data_calibracao',
+       'situacao','justificativa_inativo'],
       [
         // Uma linha por caso, para servir de referência de preenchimento.
         ['PAQ','Paquímetro','Paquímetro digital 0-150 mm','Mitutoyo','0,01 mm','TMMDE','12345',
-         '','2026-01-15','NF-8891','PC-2026-0142','Armário A2','nao','calibrado','2026-02-10','','ativo',''],
+         '2026-01-15','Armário A2','nao','calibrado','2026-02-10','ativo',''],
         ['MIC','Micrômetro','Micrômetro externo 0-25 mm','Starrett','0,001 mm','TMMDE','67890',
-         '','2025-08-03','','','Armário A2','nao','descalibrado','','','ativo',''],
+         '2025-08-03','Armário A2','nao','descalibrado','','ativo',''],
         ['TOR','Torquímetro','Torquímetro estalo 20-100 Nm','Tramontina','1 Nm','TMMDE','55512',
-         '','2025-11-20','','','Oficina','nao','solicitado','','PC-2026-0311','ativo',''],
+         '2025-11-20','Oficina','nao','em calibracao externa','','ativo',''],
         ['REL','Relógio comparador','Relógio comparador 0-10 mm','Mitutoyo','0,01 mm','TMMDE','33210',
-         '','2024-05-14','','','','nao','descalibrado','','','nao encontrado',
-         'Não localizado no inventário de agosto; segregado da lista mestre'],
-        ['BLP','Blocos padrão','Jogo de blocos padrão 87 peças','Mitutoyo','','REFERENCIA','99001',
-         'Padrão grau 1 · certificado RBC 2026/0431','2026-03-01','','','','nao','','','','ativo','']
+         '2024-05-14','','nao','descalibrado','','sucateado','Ponteiro quebrado, sem reposição no fabricante'],
+        ['BLP','Blocos padrão','Jogo de blocos padrão 87 peças','Mitutoyo','grau 1','REFERENCIA','99001',
+         '2026-03-01','Sala de metrologia','sim','calibrado','2026-03-05','ativo','']
       ]));
 
   const inp = el.querySelector('#fArqInstr');
@@ -300,15 +227,13 @@ function previa(el, linhas){
   const porNome   = new Map(familias.map(f => [chave(f.nome), f]));
 
   const hoje = hojeISO();
+  const admin = souAdmin();
 
   const itens = linhas.map((l, i) => {
     const codigo = l.codigo || l.familia_codigo || '';
     const fam = porCodigo.get(chave(codigo)) || porNome.get(chave(l.familia || ''));
-    // "classificacao" é o nome novo da coluna; "tipo" continua valendo
-    // para não invalidar as planilhas que a metrologia já montou.
-    const tipoBruto = String(l.classificacao || l.tipo || '').toUpperCase();
-    const tipo = tipoBruto === 'REFERENCIA' ? 'REFERENCIA'
-               : tipoBruto === 'TMMDE'      ? 'TMMDE' : tipoPadrao;
+    const tipo = (l.tipo || '').toUpperCase() === 'REFERENCIA' ? 'REFERENCIA'
+               : (l.tipo || '').toUpperCase() === 'TMMDE' ? 'TMMDE' : tipoPadrao;
     const problemas = [];
 
     if (!fam) problemas.push('família não encontrada');
@@ -316,35 +241,21 @@ function previa(el, linhas){
 
     const data = /^\d{4}-\d{2}-\d{2}$/.test(l.data_entrada || '') ? l.data_entrada : entradaPadrao;
 
-    /* ---- status de calibração ----
-       Padrão de referência não entra nesta conta: ele não vence, então
-       status e data de calibração são ignorados em vez de recusados —
-       recusar a linha inteira por uma coluna que não se aplica só faria
-       a metrologia limpar a planilha à mão. */
-    const referencia = tipo === 'REFERENCIA';
-    const statusBruto = referencia ? '' : chave(l.status || l.situacao_calibracao || '');
+    /* ---- status de calibração ---- */
+    const statusBruto = chave(l.status || l.situacao_calibracao || '');
     let status = 'descalibrado';
     if (statusBruto){
       if (STATUS_PLANILHA[statusBruto]) status = STATUS_PLANILHA[statusBruto];
       else problemas.push(`status "${l.status}" não reconhecido`);
     }
 
-    const dataCal = !referencia && /^\d{4}-\d{2}-\d{2}$/.test(l.data_calibracao || '')
-      ? l.data_calibracao : null;
-    if (!referencia && status === 'calibrado' && !dataCal)
+    const dataCal = /^\d{4}-\d{2}-\d{2}$/.test(l.data_calibracao || '') ? l.data_calibracao : null;
+    if (status === 'calibrado' && !dataCal)
       problemas.push('status "calibrado" exige data_calibracao no formato AAAA-MM-DD');
     if (dataCal && dataCal > hoje)
       problemas.push('data_calibracao no futuro');
     if (dataCal && dataCal < data)
       problemas.push('data_calibracao anterior à data de entrada');
-
-    /* Calibração solicitada exige a rastreabilidade do pedido — a mesma
-       regra da tela, e a mesma do banco. Recusar aqui é melhor do que
-       deixar a linha falhar no meio da importação, com o instrumento já
-       criado e o status pela metade. */
-    const rastreio = String(l.rastreabilidade || l.pedido_calibracao || l.pedido || '').trim();
-    if (status === 'solicitado' && !rastreio)
-      problemas.push('status "solicitado" exige a coluna rastreabilidade');
 
     /* ---- condição física ---- */
     const condBruta = chave(l.situacao || l.condicao_fisica || l.condicao || '');
@@ -357,32 +268,24 @@ function previa(el, linhas){
     const motivoInativo = String(l.motivo_inativo || '').trim() || MOTIVO_DIRETO[condBruta] || 'Danificado';
 
     if (condicao === 'inativo'){
-      if (justInativo.length < 10) problemas.push('inativo exige justificativa_inativo com 10+ caracteres');
-      // Mesma regra da tela de Inventário: instrumento com calibração em
-      // andamento não é inativado — inativar abandona a solicitação no
-      // meio, sem cancelá-la.
-      if (['solicitado','em_calibracao_externa'].includes(status))
-        problemas.push('instrumento inativo não pode entrar com a calibração solicitada ou em laboratório');
+      if (!admin) problemas.push('só administrador importa instrumento inativo');
+      else if (justInativo.length < 10) problemas.push('inativo exige justificativa_inativo com 10+ caracteres');
     }
 
     return {
       linha: i + 2, ok: problemas.length === 0, problemas,
-      familia: fam, codigo, tipo, referencia, status, condicao, dataCal,
-      motivoInativo, justInativo, rastreio,
+      familia: fam, codigo, tipo, status, condicao, dataCal,
+      motivoInativo, justInativo,
       dados: fam ? {
         familia_id: fam.id, tipo,
         descricao: String(l.descricao || '').trim(),
         fabricante: l.fabricante || null,
         resolucao: l.resolucao || null,
         num_serie: l.num_serie || null,
-        observacoes: l.observacoes || l.observacao || null,
         data_entrada: data,
-        nota_fiscal: l.nota_fiscal || null,
-        pedido_compra: l.pedido_compra || null,
         localizacao_normal: l.localizacao || l.localizacao_normal || null,
-        // Referência não tem relógio de validade para pausar.
-        standby: tipo === 'TMMDE' && /^(sim|s|true|1|x)$/i.test(String(l.standby || '')),
-        origem: (l.nota_fiscal || l.pedido_compra) ? 'recebimento' : 'avulso'
+        standby: /^(sim|s|true|1|x)$/i.test(String(l.standby || '')),
+        origem: 'avulso'
       } : null
     };
   });
@@ -395,7 +298,7 @@ function previa(el, linhas){
         <span class="right">${validos.length} de ${itens.length} prontos</span></div>
       <div class="card-body">
         ${itens.length - validos.length
-          ? `<div class="warn-box w fixa">${itens.length - validos.length} linha(s) serão ignoradas.
+          ? `<div class="warn-box w">${itens.length - validos.length} linha(s) serão ignoradas.
              Corrija a planilha e importe de novo se elas forem necessárias.</div>` : ''}
         <div class="tbl-wrap"><table class="tbl" style="min-width:1040px">
           <thead><tr><th>Linha</th><th>Família</th><th>Tipo</th><th>Descrição</th>
@@ -405,11 +308,11 @@ function previa(el, linhas){
             <tr class="${i.ok ? '' : 'l-descalibrado'}">
               <td class="num">${i.linha}</td>
               <td>${esc(i.familia ? i.familia.codigo + ' — ' + i.familia.nome : i.codigo || '—')}</td>
-              <td>${esc(i.referencia ? 'Referência' : 'TMMDE')}</td>
+              <td>${esc(i.tipo === 'REFERENCIA' ? 'Referência' : 'TMMDE')}</td>
               <td>${esc(i.dados?.descricao || '—')}</td>
               <td>${esc(i.dados?.data_entrada || '—')}</td>
-              <td>${badge(i.referencia ? 'referencia' : i.status)}</td>
-              <td>${esc(i.referencia ? 'não se aplica' : (i.dataCal ? fmtData(i.dataCal) : '—'))}</td>
+              <td>${badge(i.status)}</td>
+              <td>${esc(i.dataCal ? fmtData(i.dataCal) : '—')}</td>
               <td>${badgeCondicao(i.condicao)}</td>
               <td>${i.ok ? '<span class="bdg s-calibrado">Pronto</span>'
                          : '<span class="bdg s-descalibrado">'+esc(i.problemas.join(' · '))+'</span>'}</td>
@@ -454,8 +357,7 @@ function previa(el, linhas){
         // 2. Estados declarados pelo usuário (solicitado / em calibração externa).
         //    'descalibrado' já é o padrão; 'calibrado' veio do passo 1.
         if (item.status === 'solicitado' || item.status === 'em_calibracao_externa'){
-          await definirStatusWorkflow(novo.id, item.status,
-            'Importação em massa de planilha', item.rastreio || null);
+          await definirStatusWorkflow(novo.id, item.status, 'Importação em massa de planilha');
         }
 
         // 3. Condição física, por último: instrumento inativo não deve
@@ -477,24 +379,7 @@ function previa(el, linhas){
         </div>
         ${falhas.length ? `<ul style="font-size:13px;margin-left:18px">${
           falhas.map(f => `<li>Linha ${f.linha}: ${esc(f.erro)}</li>`).join('')}</ul>` : ''}
-        ${feitos ? `
-        <!-- 'fixa': é a única pendência que a importação deixa em aberto,
-             e ela não aparece em lugar nenhum se não for dita aqui. A
-             planilha não carrega imagens; a foto é o que identifica o
-             instrumento na conferência do inventário. -->
-        <div class="warn-box w fixa" style="margin-top:14px">
-          <b>Estes instrumentos entraram sem foto.</b> A planilha não carrega imagens —
-          a foto se anexa depois, pela pasta do instrumento, sem recadastrar nada.
-          Em <b>Arquivos</b>, o indicador <b>Sem foto</b> lista quem ainda falta.
-          <div style="margin-top:10px">
-            <button class="btn btn-outline btn-sm" id="btIrArquivos">Ir para Arquivos</button>
-          </div>
-        </div>` : ''}
       </div></div>`;
-
-    const btArq = res.querySelector('#btIrArquivos');
-    if (btArq) btArq.addEventListener('click', () => irPara('arquivos'));
-
     bt.textContent = 'IMPORTAÇÃO CONCLUÍDA';
     toast(`${feitos} instrumento(s) importados.`, falhas.length ? 'error' : 'success');
     familias = await listarFamilias();

@@ -25,20 +25,14 @@ export const STATUS = {
     ajuda:'Instrumento em laboratório externo.' },
   standby_pausado: {
     rotulo:'Standby (relógio parado)', cor:'#6A7480', fundo:'#F2F4F6',
-    ajuda:'Calibrado e guardado sem uso: a validade só começa a contar na primeira saída.' },
-  referencia: {
-    rotulo:'Referência',               cor:'#1F7A8C', fundo:'#E9F4F6',
-    ajuda:'Padrão de aferição: cadastro de rastreabilidade, sem exigência de calibração periódica.' }
+    ajuda:'Calibrado e guardado sem uso: a validade só começa a contar na primeira saída.' }
 };
 
 /** Ordem de leitura na interface: do mais urgente ao resolvido. */
 export const ORDEM_STATUS = [
   'descalibrado','proximo_vencimento','em_calibracao_externa',
-  'solicitado','standby_pausado','calibrado','referencia'
+  'solicitado','standby_pausado','calibrado'
 ];
-
-/** Situações que existem só para instrumento sob controle de calibração. */
-export const ORDEM_STATUS_TMMDE = ORDEM_STATUS.filter(s => s !== 'referencia');
 
 /* ---------------------------------------------------------------------
    Ordem dos segmentos em gráfico.
@@ -55,28 +49,14 @@ export const ORDEM_STATUS_TMMDE = ORDEM_STATUS.filter(s => s !== 'referencia');
        nos gráficos ele entra somado a "calibrado", que é o que ele é:
        um instrumento válido com o relógio parado.
 
-   REFERÊNCIA entra no anel — padrão de aferição é instrumento ativo do
-   acervo, e deixá-lo fora fazia o total do anel não bater com o acervo
-   ativo. Ele vai no FIM da ordem, e não no meio: azul (#3D5AC0), roxo
-   (#6D4AAE) e teal (#1F7A8C) são os três tons que mais se aproximam sob
-   deuteranopia, então teal fica encostado só no verde de "calibrado" —
-   par que se separa bem porque o verde clareia para amarelado e o teal
-   escurece para azul-acinzentado. O fim da fila também é a leitura certa:
-   referência não é pendência, é classificação.
-
-   Antes de mexer nesta ordem, rode o validador de novo — em especial o
-   par teal/verde, que é o mais apertado desta lista.
+   Antes de mexer nesta ordem, rode o validador de novo.
    --------------------------------------------------------------------- */
 export const ORDEM_GRAFICO = [
-  'descalibrado','em_calibracao_externa','proximo_vencimento','solicitado',
-  'calibrado','referencia'
+  'descalibrado','em_calibracao_externa','proximo_vencimento','solicitado','calibrado'
 ];
 
-/** Status que permitem empréstimo (a trava definitiva está no banco).
-    'referencia' entra porque o padrão de aferição não tem validade a
-    vencer — cobrar calibração em dia dele seria cobrar uma regra que a
-    própria classificação dispensa. */
-export const PODE_EMPRESTAR = ['calibrado','standby_pausado','referencia'];
+/** Status que permitem empréstimo (a trava definitiva está no banco). */
+export const PODE_EMPRESTAR = ['calibrado','standby_pausado'];
 
 export const meta   = s => STATUS[s] || { rotulo: s || '—', cor:'#807C74', fundo:'#F1EFEB', ajuda:'' };
 export const rotulo = s => meta(s).rotulo;
@@ -103,43 +83,8 @@ export function legenda(statusList = ORDEM_STATUS){
   }).join('') + `</div>`;
 }
 
-/* ---------------------------------------------------------------------
-   QUEM PODE SER INATIVADO
-
-   Inativar é declarar o instrumento fora do acervo em uso — sucateado,
-   danificado, não encontrado, em manutenção. Duas situações impedem
-   isso, e as duas por motivo prático, não burocrático:
-
-     · EMPRESTADO. O instrumento está na mão de outro setor. Declará-lo
-       segregado sem ter recebido de volta é registrar uma coisa e ter
-       outra na prateleira. Primeiro a devolução.
-
-     · CALIBRAÇÃO EM ANDAMENTO ('solicitado' ou 'em calibração externa').
-       Existe pedido aberto e, quase sempre, o instrumento está no
-       laboratório. Inativar aqui abandona a solicitação no meio sem
-       cancelá-la. Volte para descalibrado — o que também desvincula a
-       rastreabilidade — e então inative.
-
-   Padrão de referência não participa do fluxo de calibração, então só a
-   primeira trava se aplica a ele.
-
-   A trava de verdade está em inativar_instrumento(), no banco. Esta
-   função existe para a tela poder dizer POR QUÊ antes do clique.
-   --------------------------------------------------------------------- */
-export function bloqueioInativacao(i){
-  if (!i || i.condicao_fisica === 'inativo') return null;
-  if (i.emprestado)
-    return `Está emprestado para ${i.emprestado_para || 'outro setor'}${
-      i.setor_atual ? ' (' + i.setor_atual + ')' : ''}. Registre a devolução antes de inativar.`;
-  if (i.tipo !== 'REFERENCIA' && !['calibrado','descalibrado'].includes(i.status_workflow))
-    return `A calibração está em andamento (${rotulo(i.status_workflow)}). Só instrumentos ` +
-           `calibrados ou descalibrados podem ser inativados — encerre ou cancele a solicitação primeiro.`;
-  return null;
-}
-
 /** Texto curto para a coluna "vence em". */
 export function textoVencimento(inst){
-  if (inst.status_efetivo === 'referencia')      return 'não se aplica';
   if (inst.status_efetivo === 'standby_pausado') return 'sem contagem';
   const d = inst.dias_para_vencer;
   if (d == null) return '—';

@@ -15,7 +15,7 @@
 revoke all on public.profiles, public.config, public.familias,
               public.periodicidade_fases, public.instrumentos,
               public.calibracoes, public.movimentacoes, public.documentos,
-              public.inspecoes, public.auditoria, public.setores_email
+              public.inspecoes, public.auditoria
   from anon, authenticated;
 
 -- PERFIS -------------------------------------------------------------
@@ -23,16 +23,8 @@ grant select (id, email, nome, papel, ativo, criado_em) on public.profiles to au
 grant update (nome)                                     on public.profiles to authenticated;
 
 -- CONFIG -------------------------------------------------------------
--- O INSERT também é concedido: a tela grava parâmetro com upsert, porque
--- a chave pode nunca ter sido semeada — e um UPDATE que não acha linha
--- "dá certo" sem gravar nada. Sem este grant, alterar qualquer parâmetro
--- (prazos, setores, motivos de inativação) voltava "operação bloqueada
--- pelo banco" mesmo para administrador. As duas políticas exigem admin.
--- A rota preferida hoje é a RPC salvar_config, que não depende deste
--- grant sobreviver à próxima manutenção deste arquivo.
 grant select (chave, valor) on public.config to authenticated;
 grant update (valor)        on public.config to authenticated;   -- policy limita a admin
-grant insert (chave, valor) on public.config to authenticated;   -- policy limita a admin
 
 -- FAMÍLIAS -----------------------------------------------------------
 -- Sem update de periodicidade: só a RPC alterar_periodicidade (security
@@ -51,16 +43,14 @@ grant insert (id, familia_id, ordem, intervalo_meses, vigencia_ate_meses, ancora
 -- INSTRUMENTOS -------------------------------------------------------
 -- condicao_fisica / motivo_inativo / justificativa_inativo ficam de fora:
 -- inativação passa obrigatoriamente por inativar_instrumento().
--- pedido_calibracao também fica de fora do UPDATE: ele entra pela RPC
--- definir_status_workflow (na solicitação) e sai pela registrar_calibracao.
 grant select on public.instrumentos to authenticated;
-grant update (fabricante, descricao, resolucao, num_serie, observacoes,
-              nota_fiscal, pedido_compra, localizacao_normal, standby,
-              data_inicio_relogio, status_workflow)
+grant update (fabricante, descricao, resolucao, num_serie, nota_fiscal,
+              pedido_compra, localizacao_normal, standby, data_inicio_relogio,
+              status_workflow)
   on public.instrumentos to authenticated;
 grant insert (id, tag, familia_id, tipo, fabricante, descricao, resolucao,
-              num_serie, observacoes, nota_fiscal, pedido_compra, data_entrada,
-              standby, localizacao_normal, origem, status_workflow)
+              num_serie, nota_fiscal, pedido_compra, data_entrada, standby,
+              localizacao_normal, origem, status_workflow)
   on public.instrumentos to authenticated;   -- usado só no import em massa
 grant delete on public.instrumentos to authenticated;   -- policy limita a admin
 
@@ -87,11 +77,6 @@ grant select, insert on public.documentos to authenticated;
 grant delete         on public.documentos to authenticated;
 grant select, insert on public.inspecoes  to authenticated;
 
--- E-MAILS POR SETOR --------------------------------------------------
--- Leitura para todos (o botão de notificar é do metrologista também);
--- escrita só pelas RPCs salvar_email_setor / remover_email_setor.
-grant select on public.setores_email to authenticated;
-
 -- AUDITORIA ----------------------------------------------------------
 -- Sem grant de update/delete: ninguém altera a trilha pela API.
 grant select on public.auditoria to authenticated;
@@ -103,15 +88,6 @@ grant execute on function public.sou_ativo()   to authenticated;
 grant execute on function public.sou_admin()   to authenticated;
 grant execute on function public.meu_email()   to authenticated;
 grant execute on function public.cfg_int(text,int) to authenticated;
-grant execute on function public.cfg_txt(text,text) to authenticated;
-grant execute on function public.cfg_bool(text,boolean) to authenticated;
-grant execute on function public.salvar_config(text,text) to authenticated;
-grant execute on function public.remover_arquivo(text,uuid,text,text) to authenticated;
--- Anexar foto depois do cadastro é trabalho de metrologista (sou_ativo),
--- não de administrador: quem encontra o instrumento sem foto na bancada é
--- quem tira a foto. Remover arquivo continua sendo só do administrador.
-grant execute on function public.anexar_foto_instrumento(uuid,text,text) to authenticated;
-grant execute on function public.limite_alerta_vencimento() to authenticated;
 grant execute on function public.gerar_tag(uuid,text) to authenticated;
 grant execute on function public.calcular_data_proxima(uuid,date,boolean) to authenticated;
 grant execute on function public.criar_instrumento_completo(jsonb,jsonb,jsonb) to authenticated;
@@ -119,9 +95,7 @@ grant execute on function public.registrar_calibracao(uuid,jsonb) to authenticat
 grant execute on function public.alterar_periodicidade(uuid,int,boolean,jsonb,text) to authenticated;
 grant execute on function public.inativar_instrumento(uuid,text,text) to authenticated;
 grant execute on function public.reativar_instrumento(uuid,text) to authenticated;
-grant execute on function public.definir_status_workflow(uuid,text,text,text) to authenticated;
-grant execute on function public.salvar_email_setor(text,text,text) to authenticated;
-grant execute on function public.remover_email_setor(text) to authenticated;
+grant execute on function public.definir_status_workflow(uuid,text,text) to authenticated;
 grant execute on function public.auditar(text,uuid,text,text,text,text) to authenticated;
 
 -- ---------------------------------------------------------------------
@@ -137,7 +111,6 @@ alter table public.movimentacoes       enable row level security;
 alter table public.documentos          enable row level security;
 alter table public.inspecoes           enable row level security;
 alter table public.auditoria           enable row level security;
-alter table public.setores_email       enable row level security;
 
 -- PERFIS
 drop policy if exists perfis_ler on public.profiles;
@@ -156,10 +129,6 @@ create policy config_ler on public.config
 drop policy if exists config_alterar on public.config;
 create policy config_alterar on public.config
   for update to authenticated using (public.sou_admin()) with check (public.sou_admin());
-
-drop policy if exists config_criar on public.config;
-create policy config_criar on public.config
-  for insert to authenticated with check (public.sou_admin());
 
 -- FAMÍLIAS
 drop policy if exists fam_ler on public.familias;
@@ -232,13 +201,6 @@ create policy insp_ler on public.inspecoes
 drop policy if exists insp_criar on public.inspecoes;
 create policy insp_criar on public.inspecoes
   for insert to authenticated with check (public.sou_ativo());
-
--- E-MAILS POR SETOR — todos leem, ninguém escreve pela API.
--- Sem policy de insert/update/delete: só as RPCs (security definer)
--- gravam, e elas exigem sou_admin().
-drop policy if exists setmail_ler on public.setores_email;
-create policy setmail_ler on public.setores_email
-  for select to authenticated using (public.sou_ativo());
 
 -- AUDITORIA — leitura e inclusão. Sem policy de update/delete:
 -- combinada com os gatilhos tg_auditoria_imutavel, a trilha é append-only.

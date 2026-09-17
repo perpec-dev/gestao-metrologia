@@ -9,11 +9,9 @@
 import { esc, fmtData, chave, toast, msgErro, debounce, htmlCarregando,
          lembrar, lembrado } from '../utils.js';
 import { listarInstrumentos, listarFamilias, inativarInstrumento,
-         reativarInstrumento, apagarInstrumentos, cfgLista, MOTIVO_OUTROS,
-         ouvir } from '../supabase.js';
+         reativarInstrumento, apagarInstrumentos, cfgLista, ouvir } from '../supabase.js';
 import { criarTabela } from '../components/tabela.js';
-import { badge, badgeCondicao, classeLinha, legenda,
-         bloqueioInativacao } from '../components/status-badge.js';
+import { badge, badgeCondicao, classeLinha, legenda } from '../components/status-badge.js';
 import { abrirModal } from '../components/modal.js';
 import { souAdmin } from '../auth.js';
 import { abrirDetalhe } from './calibracao.js';
@@ -22,7 +20,7 @@ let desligarRealtime = null;
 let tabela = null;
 let dados = [];
 let selecionados = new Set();
-let filtros = { condicao:'ativo', familia:'', tipo:'', texto:'' };
+let filtros = { condicao:'ativo', familia:'', texto:'' };
 
 export function destroy(){
   if (desligarRealtime){ desligarRealtime(); desligarRealtime = null; }
@@ -35,16 +33,8 @@ export async function render(container){
 
   container.innerHTML = `
     ${souAdmin() ? '' : `<div class="warn-box i">
-      Inativar e reativar instrumentos é atribuição da metrologia — você pode fazer as duas
-      coisas, com motivo e justificativa. <b>Apagar</b> instrumento, esse sim, é só do
-      administrador: inativar preserva o histórico, apagar destrói.</div>`}
-
-    <div class="warn-box i">
-      <b>Quando dá para inativar.</b> Só instrumento <b>calibrado</b> ou <b>descalibrado</b> que
-      <b>não esteja emprestado</b>. Com a calibração solicitada ou em laboratório externo, encerre
-      ou cancele a solicitação primeiro — inativar no meio abandona o pedido sem cancelá-lo.
-      Padrão de referência também pode ser inativado; nele vale só a regra do empréstimo.
-    </div>
+      Inativar e reativar instrumentos é atribuição do <b>administrador</b>.
+      Você pode consultar o inventário normalmente.</div>`}
 
     <div class="filtros">
       <div class="field busca">
@@ -57,14 +47,6 @@ export async function render(container){
           <option value="">Todas</option>
           <option value="ativo">Ativos</option>
           <option value="inativo">Inativos</option>
-        </select>
-      </div>
-      <div class="field">
-        <label for="fTipo">Classificação</label>
-        <select id="fTipo">
-          <option value="">Todas</option>
-          <option value="TMMDE">TMMDE — instrumento de uso</option>
-          <option value="REFERENCIA">Referência — padrão de aferição</option>
         </select>
       </div>
       <div class="field">
@@ -85,14 +67,12 @@ export async function render(container){
 
   container.querySelector('#fCondicao').value = filtros.condicao || '';
   container.querySelector('#fFamilia').value  = filtros.familia  || '';
-  container.querySelector('#fTipo').value     = filtros.tipo     || '';
 
   const aplicar = () => {
     filtros = {
       texto:    container.querySelector('#fBusca').value,
       condicao: container.querySelector('#fCondicao').value,
-      familia:  container.querySelector('#fFamilia').value,
-      tipo:     container.querySelector('#fTipo').value
+      familia:  container.querySelector('#fFamilia').value
     };
     lembrar('filtros.inventario', filtros);
     if (tabela) tabela.atualizar(filtrar());
@@ -100,7 +80,7 @@ export async function render(container){
   };
 
   container.querySelector('#fBusca').addEventListener('input', debounce(aplicar, 200));
-  ['#fCondicao','#fFamilia','#fTipo'].forEach(s => container.querySelector(s).addEventListener('change', aplicar));
+  ['#fCondicao','#fFamilia'].forEach(s => container.querySelector(s).addEventListener('change', aplicar));
   container.querySelector('#btAtualizar').addEventListener('click', () => carregar(container));
 
   await carregar(container);
@@ -114,7 +94,6 @@ function filtrar(){
   return dados.filter(i => {
     if (filtros.condicao && i.condicao_fisica !== filtros.condicao) return false;
     if (filtros.familia  && i.familia_id !== filtros.familia) return false;
-    if (filtros.tipo     && i.tipo !== filtros.tipo) return false;
     if (t && !chave([i.tag, i.descricao, i.num_serie, i.fabricante, i.familia_nome].join(' ')).includes(t))
       return false;
     return true;
@@ -123,25 +102,17 @@ function filtrar(){
 
 function resumo(container){
   const el = container.querySelector('#resumo');
-  const ativos      = dados.filter(i => i.condicao_fisica === 'ativo').length;
-  const inativos    = dados.filter(i => i.condicao_fisica === 'inativo').length;
-  const referencias = dados.filter(i => i.tipo === 'REFERENCIA').length;
-  const fora        = dados.filter(i => i.emprestado).length;
+  const ativos   = dados.filter(i => i.condicao_fisica === 'ativo').length;
+  const inativos = dados.filter(i => i.condicao_fisica === 'inativo').length;
+  const fora     = dados.filter(i => i.emprestado).length;
   el.innerHTML = `
     <button class="kpi c-total"      data-f=""><div class="k">Total no acervo</div><div class="v">${dados.length}</div></button>
     <button class="kpi c-calibrado"  data-f="ativo"><div class="k">Ativos</div><div class="v">${ativos}</div></button>
     <button class="kpi c-standby"    data-f="inativo"><div class="k">Inativos</div><div class="v">${inativos}</div></button>
-    <button class="kpi c-referencia" data-t="REFERENCIA"><div class="k">Referências</div><div class="v">${referencias}</div></button>
     <div class="kpi c-solicitado" style="cursor:default"><div class="k">Emprestados agora</div><div class="v">${fora}</div></div>`;
   el.querySelectorAll('[data-f]').forEach(b => b.addEventListener('click', () => {
     container.querySelector('#fCondicao').value = b.dataset.f;
-    container.querySelector('#fTipo').value = '';
     container.querySelector('#fCondicao').dispatchEvent(new Event('change'));
-  }));
-  el.querySelectorAll('[data-t]').forEach(b => b.addEventListener('click', () => {
-    container.querySelector('#fTipo').value = b.dataset.t;
-    container.querySelector('#fCondicao').value = '';
-    container.querySelector('#fTipo').dispatchEvent(new Event('change'));
   }));
 }
 
@@ -178,15 +149,8 @@ async function carregar(container, silencioso = false){
       { chave:'tag', rotulo:'Tag', classe:'mono', largura:'110px' },
       { chave:'descricao', rotulo:'Descrição' },
       { chave:'familia_nome', rotulo:'Família', largura:'150px' },
-      { chave:'tipo', rotulo:'Classificação', largura:'110px',
-        html: l => l.tipo === 'REFERENCIA'
-          ? '<span class="bdg s-referencia">Referência</span>'
-          : '<span class="bdg neutro">TMMDE</span>' },
       { chave:'condicao_fisica', rotulo:'Condição', largura:'110px',
-        // O motivo é o que responde "por que este está inativo?" sem
-        // precisar abrir a ficha — a pergunta nº 1 de quem varre a lista.
-        html: l => badgeCondicao(l.condicao_fisica) + (l.condicao_fisica === 'inativo' && l.motivo_inativo
-          ? `<div style="font-size:11px;color:var(--muted);margin-top:2px">${esc(l.motivo_inativo)}</div>` : '') },
+        html: l => badgeCondicao(l.condicao_fisica) },
       { chave:'status_efetivo', rotulo:'Situação', largura:'170px',
         html: l => badge(l.status_efetivo) },
       { chave:'data_proxima', rotulo:'Próxima calibração', largura:'130px',
@@ -196,25 +160,13 @@ async function carregar(container, silencioso = false){
           ? `<span title="Com ${esc(l.emprestado_para)}">${esc(l.setor_atual || '—')} ↗</span>`
           : esc(l.localizacao_normal || '—') },
       { chave:'acoes', rotulo:'', ordenavel:false, largura:'210px',
-        /* Botão desabilitado com o motivo no title, em vez de botão que
-           some: quem procura "Inativar" e não acha conclui que o sistema
-           quebrou; quem lê "está emprestado para Fulano" sabe o que
-           fazer em seguida. */
-        html: l => {
-          if (l.condicao_fisica !== 'ativo') return `
-            <div style="display:flex;gap:6px;flex-wrap:wrap">
-              <button class="btn btn-outline btn-sm" data-ficha="${esc(l.id)}">Ficha</button>
-              <button class="btn btn-outline btn-sm" data-reativar="${esc(l.id)}">Reativar</button>
-            </div>`;
-          const bloqueio = bloqueioInativacao(l);
-          return `
-            <div style="display:flex;gap:6px;flex-wrap:wrap">
-              <button class="btn btn-outline btn-sm" data-ficha="${esc(l.id)}">Ficha</button>
-              <button class="btn btn-outline btn-sm" data-inativar="${esc(l.id)}"
-                      ${bloqueio ? 'disabled' : ''}
-                      title="${esc(bloqueio || 'Inativar este instrumento')}">
-                Inativar</button>
-            </div>` } }
+        html: l => `
+          <div style="display:flex;gap:6px;flex-wrap:wrap">
+            <button class="btn btn-outline btn-sm" data-ficha="${esc(l.id)}">Ficha</button>
+            ${l.condicao_fisica === 'ativo'
+              ? `<button class="btn btn-outline btn-sm" data-inativar="${esc(l.id)}" ${souAdmin() ? '' : 'disabled'}>Inativar</button>`
+              : `<button class="btn btn-outline btn-sm" data-reativar="${esc(l.id)}" ${souAdmin() ? '' : 'disabled'}>Reativar</button>`}
+          </div>` }
     ]
   });
 
@@ -336,16 +288,6 @@ function modalApagar(container){
 /* ==================================================================== */
 function modalInativar(inst, container){
   if (!inst) return;
-
-  // A tabela já desabilita o botão, mas a lista pode estar defasada por
-  // alguns segundos: entre pintar a linha e clicar nela, outro usuário
-  // pode ter emprestado o instrumento ou solicitado a calibração.
-  const bloqueio = bloqueioInativacao(inst);
-  if (bloqueio){
-    toast(`${inst.tag} não pode ser inativado. ${bloqueio}`, 'error');
-    return;
-  }
-
   const motivos = cfgLista('motivos_inativacao');
 
   abrirModal({
@@ -354,32 +296,21 @@ function modalInativar(inst, container){
     corpo: `
       <div class="warn-box w">
         A inativação é registrada na trilha de auditoria com o seu e-mail, a data,
-        o motivo e a justificativa. Instrumento inativo não pode ser emprestado
-        nem entra no fluxo de calibração até ser reativado.
+        o motivo e a justificativa. Instrumento inativo não pode ser emprestado.
       </div>
       <div class="kv" style="margin-bottom:16px">
         <div><div class="k">Instrumento</div><div class="v">${esc(inst.descricao)}</div></div>
         <div><div class="k">Família</div><div class="v">${esc(inst.familia_nome)}</div></div>
-        <div><div class="k">Classificação</div><div class="v">${inst.tipo === 'REFERENCIA'
-              ? 'Referência — padrão de aferição' : 'TMMDE — instrumento de uso'}</div></div>
         <div><div class="k">Situação atual</div><div class="v">${badge(inst.status_efetivo)}</div></div>
       </div>
+      ${inst.emprestado ? `<div class="warn-box e">Atenção: este instrumento está emprestado para
+        <b>${esc(inst.emprestado_para)}</b>. Registre a devolução antes de inativar.</div>` : ''}
       <div class="field" id="wMotivo">
         <label for="fMotivo">Motivo<span class="req">*</span></label>
         <select id="fMotivo"><option value="">Selecione…</option>
           ${motivos.map(m => `<option value="${esc(m)}">${esc(m)}</option>`).join('')}</select>
         <div class="msg" id="mMotivo"></div>
       </div>
-
-      <!-- "Outros" não pode virar um buraco na lista mestre: quem escolhe
-           precisa dizer para onde o instrumento foi. -->
-      <div class="field" id="wSegregacao" style="margin-top:12px" hidden>
-        <label for="fSegregacao">Descrição da segregação<span class="req">*</span></label>
-        <input type="text" id="fSegregacao" placeholder="Ex.: enviado ao fabricante; guardado na caixa vermelha da sala de metrologia">
-        <div class="hint">Onde o instrumento foi parar e como está identificado. Entra na justificativa.</div>
-        <div class="msg" id="mSegregacao"></div>
-      </div>
-
       <div class="field" id="wJustInat" style="margin-top:12px">
         <label for="fJustInat">Justificativa<span class="req">*</span></label>
         <textarea id="fJustInat" placeholder="Descreva o que aconteceu com o instrumento."></textarea>
@@ -391,28 +322,16 @@ function modalInativar(inst, container){
       { rotulo:'Inativar instrumento', classe:'btn-red', onClick: async (fechar, bt) => {
           const motivo = document.getElementById('fMotivo').value;
           const just   = document.getElementById('fJustInat').value.trim();
-          const segreg = document.getElementById('fSegregacao').value.trim();
-          const exigeSegregacao = motivo === MOTIVO_OUTROS;
           let erro = false;
           if (!motivo){ document.getElementById('wMotivo').classList.add('err');
                         document.getElementById('mMotivo').textContent = 'Escolha o motivo.'; erro = true; }
-          if (exigeSegregacao && segreg.length < 5){
-                        document.getElementById('wSegregacao').classList.add('err');
-                        document.getElementById('mSegregacao').textContent =
-                          'Descreva a segregação do instrumento.'; erro = true; }
           if (just.length < 10){ document.getElementById('wJustInat').classList.add('err');
                         document.getElementById('mJustInat').textContent = 'Escreva pelo menos 10 caracteres.'; erro = true; }
           if (erro){ toast('Confira os campos em vermelho.','error'); return; }
 
-          // A segregação entra na própria justificativa: é ela que vai
-          // para a trilha de auditoria e para o relatório de inativos.
-          const justificativa = exigeSegregacao
-            ? `Segregação: ${segreg} · ${just}`
-            : just;
-
           bt.disabled = true; bt.textContent = 'Inativando…';
           try {
-            await inativarInstrumento(inst.id, motivo, justificativa);
+            await inativarInstrumento(inst.id, motivo, just);
             fechar();
             toast(`${inst.tag} inativado e registrado na auditoria.`, 'success');
             carregar(container, true);
@@ -422,15 +341,7 @@ function modalInativar(inst, container){
           }
       } }
     ],
-    aoAbrir: body => {
-      const sel = body.querySelector('#fMotivo');
-      const wSeg = body.querySelector('#wSegregacao');
-      sel.addEventListener('change', () => {
-        wSeg.hidden = sel.value !== MOTIVO_OUTROS;
-        if (!wSeg.hidden) body.querySelector('#fSegregacao').focus();
-      });
-      sel.focus();
-    }
+    aoAbrir: body => body.querySelector('#fMotivo').focus()
   });
 }
 
@@ -439,8 +350,7 @@ function modalReativar(inst, container){
   abrirModal({
     titulo: `Reativar — ${inst.tag}`,
     corpo: `
-      <!-- 'fixa': aqui não é dica, é o dado do instrumento. -->
-      <div class="warn-box i fixa">
+      <div class="warn-box i">
         Motivo atual da inativação: <b>${esc(inst.motivo_inativo || '—')}</b><br>
         ${esc(inst.justificativa_inativo || '')}
       </div>

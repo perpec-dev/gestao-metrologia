@@ -10,22 +10,16 @@ import { htmlCarregando, esc, toast, msgErro } from './utils.js';
 export const TELAS = [
   { id:'dashboard',   rotulo:'Painel',      arquivo:'./pages/dashboard.js',
     icone:'<path d="M3 12h7V3H3v9Zm0 9h7v-6H3v6Zm11 0h7v-9h-7v9Zm0-18v6h7V3h-7Z"/>' },
-  /* Recebimento foi absorvido por Cadastro: o que separava as duas telas
-     era a documentação de entrada, hoje um bloco opcional do formulário. */
-  { id:'cadastro',    rotulo:'Cadastro',    arquivo:'./pages/cadastro.js',
+  { id:'recebimento', rotulo:'Recebimento', arquivo:'./pages/recebimento.js',
     icone:'<path d="M21 8v13H3V8M1 3h22v5H1zM10 12h4"/>' },
+  { id:'cadastro',    rotulo:'Cadastro',    arquivo:'./pages/cadastro.js',
+    icone:'<path d="M12 5v14M5 12h14"/>' },
   { id:'calibracao',  rotulo:'Calibração',  arquivo:'./pages/calibracao.js',
     icone:'<path d="M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20ZM12 6v6l4 2"/>' },
-  /* Padrões de aferição em tela própria: eles não vencem, não são
-     cobrados e não entram na fila de trabalho da calibração. */
-  { id:'referencia',  rotulo:'Referência',  arquivo:'./pages/referencia.js',
-    icone:'<path d="M12 3v18M4.5 7.5h15M6 7.5 3 15a3.5 3.5 0 0 0 6 0L6 7.5ZM18 7.5 15 15a3.5 3.5 0 0 0 6 0l-3-7.5Z"/>' },
   { id:'emprestimo',  rotulo:'Empréstimo',  arquivo:'./pages/emprestimo.js',
     icone:'<path d="M20 12v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-7M2 7h20v5H2zM12 7v14M12 7S9 3 6.5 3a2.5 2.5 0 0 0 0 5M12 7s3-4 5.5-4a2.5 2.5 0 0 1 0 5"/>' },
   { id:'inventario',  rotulo:'Inventário',  arquivo:'./pages/inventario.js',
     icone:'<path d="M9 3h6l1 4H8l1-4ZM4 7h16v14H4zM9 12h6"/>' },
-  { id:'arquivos',    rotulo:'Arquivos',    arquivo:'./pages/arquivos.js',
-    icone:'<path d="M4 20V6a2 2 0 0 1 2-2h3.5l2 3H18a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z"/>' },
   { id:'relatorios',  rotulo:'Relatórios',  arquivo:'./pages/relatorios.js',
     icone:'<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6ZM14 2v6h6M8 13h8M8 17h5"/>' },
   { id:'admin',       rotulo:'Administração', arquivo:'./pages/admin.js', soAdmin:true,
@@ -42,15 +36,11 @@ let ehAdmin = false;
     restrita — e a restrição de verdade está no banco, não aqui. */
 export const telasVisiveis = () => TELAS.filter(t => !t.soAdmin || ehAdmin);
 
-/* Telas que mudaram de lugar. Um favorito antigo do navegador não pode
-   cair no painel sem explicação: ele vai para onde a função foi parar. */
-const REDIRECIONAR = { recebimento: 'cadastro' };
-
 /** #/calibracao/uuid-do-instrumento -> { id:'calibracao', params:['uuid…'] } */
 function lerHash(){
   const bruto = (location.hash || '').replace(/^#\/?/, '');
   const partes = bruto.split('/').filter(Boolean);
-  const id = REDIRECIONAR[partes[0]] || partes[0] || PADRAO;
+  const id = partes[0] || PADRAO;
   const existe = telasVisiveis().some(t => t.id === id);
   return { id: existe ? id : PADRAO, params: partes.slice(1) };
 }
