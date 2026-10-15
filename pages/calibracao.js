@@ -11,7 +11,7 @@
    ===================================================================== */
 import { esc, fmtData, hojeISO, toast, msgErro, debounce, chave,
          lembrar, lembrado, htmlCarregando } from '../utils.js';
-import { listarInstrumentos, buscarInstrumento, listarFamilias, registrarCalibracao,
+import { listarInstrumentos, buscarInstrumento, listarFamilias, registrarCalibracao, registrarSaidaStandby,
          definirStatusWorkflow, enviarArquivo, ouvir, abrirArquivo,
          pastaDoInstrumento, atualizarInstrumento } from '../supabase.js';
 import { CONFIG } from '../config.js';
@@ -21,7 +21,8 @@ import { badge, classeLinha, legenda, rotulo, textoVencimento,
 import { abrirModal, fecharModal, confirmar } from '../components/modal.js';
 import { montarTimeline } from '../components/timeline.js';
 import { montarArquivosInstrumento, htmlBotaoFoto, ligarAnexoFoto,
-         htmlBotaoCertificadoRetroativo, ligarCertificadoRetroativo } from '../components/arquivos.js';
+         htmlBotaoCertificadoRetroativo, ligarCertificadoRetroativo,
+         htmlBotaoCertificadoVigente, ligarCertificadoVigente } from '../components/arquivos.js';
 import { irPara } from '../router.js';
 
 let desligarRealtime = null;
@@ -272,6 +273,8 @@ export async function abrirDetalhe(id, container){
         <button class="btn btn-outline" data-status="solicitado">Solicitar calibração</button>
         <button class="btn btn-outline" data-status="em_calibracao_externa">Enviar para calibração externa</button>
         <button class="btn btn-outline" data-status="descalibrado">Marcar como descalibrado</button>
+        ${i.standby && !i.data_inicio_relogio && i.calibracao_id
+          ? `<button class="btn btn-outline" id="btSaidaStandby">Registrar saída do standby</button>` : ''}
         ${i.status_efetivo === 'calibrado' || i.status_efetivo === 'standby_pausado'
           ? `<button class="btn btn-outline" id="btEmprestar">Registrar empréstimo</button>` : ''}
       </div>`}
@@ -286,8 +289,11 @@ export async function abrirDetalhe(id, container){
            carrega PDF, então todo o passado de calibração do acervo
            importado ficou de fora. Ele entra no histórico sem mexer na
            situação nem no vencimento — quem registra a calibração
-           vigente é "Tornar calibrado", ali em cima. -->
-      <div class="arq-acoes">${htmlBotaoFoto(i)}${htmlBotaoCertificadoRetroativo(i)}</div>
+           vigente é "Tornar calibrado", ali em cima.
+
+           E a calibração vigente importada sem PDF ganha o certificado
+           pelo botão próprio, que só aparece enquanto ela não tem um. -->
+      <div class="arq-acoes">${htmlBotaoFoto(i)}${htmlBotaoCertificadoVigente(i)}${htmlBotaoCertificadoRetroativo(i)}</div>
       <div id="arqDetalhe"></div>
 
       <div class="sec-title">Histórico completo</div>
@@ -310,6 +316,7 @@ export async function abrirDetalhe(id, container){
       // com a pasta e o histórico já mostrando a foto nova.
       ligarAnexoFoto(body, repintarFicha);
       ligarCertificadoRetroativo(body, repintarFicha);
+      ligarCertificadoVigente(body, repintarFicha);
 
       const btCert = body.querySelector('#btCert');
       if (btCert) btCert.addEventListener('click', async () => {
@@ -328,6 +335,9 @@ export async function abrirDetalhe(id, container){
 
       const btCal = body.querySelector('#btCalibrar');
       if (btCal) btCal.addEventListener('click', () => formTornarCalibrado(i, container));
+
+      const btSaida = body.querySelector('#btSaidaStandby');
+      if (btSaida) btSaida.addEventListener('click', () => formSaidaStandby(i, container));
 
       body.querySelectorAll('[data-status]').forEach(b => b.addEventListener('click', async () => {
         const novo = b.dataset.status;
@@ -533,6 +543,73 @@ function formSolicitarCalibracao(i, container){
 }
 
 /* ==================================================================== */
+/* SAÍDA DO STANDBY                                                     */
+/*                                                                      */
+/* O relógio de validade de um instrumento em standby partia só pelo    */
+/* primeiro empréstimo, com a data de hoje. Instrumento que saiu para   */
+/* uso ANTES de entrar no sistema não tinha como dizer quando — e a     */
+/* saída improvisada por "Tornar calibrado" foi o que deixou o P-TER-07 */
+/* descalibrado. Aqui a data é informada e o vencimento passa a contar  */
+/* dela, com justificativa obrigatória por mexer em vencimento.         */
+/* ==================================================================== */
+function formSaidaStandby(i, container){
+  abrirModal({
+    titulo: `Registrar saída do standby — ${i.tag}`,
+    fecharFora: false,
+    corpo: `
+      <div class="warn-box i fixa">
+        Calibrado em <b>${esc(fmtData(i.ultima_calibracao))}</b> e guardado em standby.
+        Informe o dia em que ele <b>saiu para uso</b>: a validade de
+        ${i.periodicidade_customizada ? 'conforme as fases da família' : `${esc(i.periodicidade_meses)} meses`}
+        passa a contar dessa data. Situação de calibração e certificado não mudam.<br>
+        Se ele está saindo <b>agora</b>, registre o empréstimo — a saída liga o relógio sozinha.
+      </div>
+      <div class="field" id="wDataSaida">
+        <label for="fDataSaida">Data de saída do standby<span class="req">*</span></label>
+        <input type="date" id="fDataSaida" max="${hojeISO()}" min="${esc(i.ultima_calibracao || '')}">
+        <div class="msg" id="mDataSaida"></div>
+      </div>
+      <div class="field" id="wJustSaida" style="margin-top:12px">
+        <label for="fJustSaida">Justificativa<span class="req">*</span></label>
+        <textarea id="fJustSaida" placeholder="De onde vem a data. Ex.: saída registrada na OS 4471; termo de entrega de 17/02."></textarea>
+        <div class="hint">Vai para a trilha de auditoria: a data mexe no vencimento.</div>
+        <div class="msg" id="mJustSaida"></div>
+      </div>`,
+    acoes: [
+      { rotulo:'Cancelar', classe:'btn-outline', onClick: f => f() },
+      { rotulo:'Registrar saída', classe:'btn-green', onClick: async (fechar, bt) => {
+          const erro = (campo, msg) => {
+            document.getElementById('w' + campo).classList.add('err');
+            document.getElementById('m' + campo).textContent = msg;
+          };
+          const data = document.getElementById('fDataSaida').value;
+          const just = document.getElementById('fJustSaida').value.trim();
+
+          if (!data){ erro('DataSaida', 'Informe a data de saída do standby.'); return; }
+          if (data > hojeISO()){ erro('DataSaida', 'A data não pode estar no futuro.'); return; }
+          if (i.ultima_calibracao && data < i.ultima_calibracao){
+            erro('DataSaida', `Não pode ser anterior à calibração (${fmtData(i.ultima_calibracao)}).`);
+            return;
+          }
+          if (just.length < 10){ erro('JustSaida', 'Justifique com pelo menos 10 caracteres.'); return; }
+
+          bt.disabled = true; bt.textContent = 'Salvando…';
+          try {
+            const proxima = await registrarSaidaStandby(i.id, data, just);
+            fechar();
+            toast(`${i.tag}: validade contando desde ${fmtData(data)} · próxima calibração ${fmtData(proxima)}.`, 'success');
+            if (container) carregar(container, true);
+          } catch (e){
+            toast(msgErro(e), 'error');
+            bt.disabled = false; bt.textContent = 'Registrar saída';
+          }
+      } }
+    ],
+    aoAbrir: body => body.querySelector('#fDataSaida').focus()
+  });
+}
+
+/* ==================================================================== */
 /* TORNAR CALIBRADO                                                     */
 /* ==================================================================== */
 function formTornarCalibrado(i, container){
@@ -549,6 +626,12 @@ function formTornarCalibrado(i, container){
       <div class="warn-box g">
         A rastreabilidade <b>${esc(i.pedido_calibracao)}</b>, associada quando esta calibração
         foi solicitada, será gravada no registro automaticamente.
+      </div>` : ''}
+      ${i.calibracao_id && !i.certificado_path ? `
+      <div class="warn-box w fixa">
+        A calibração atual, de <b>${esc(fmtData(i.ultima_calibracao))}</b>, está <b>sem certificado</b>.
+        Se o PDF que você tem é dela, feche esta janela e use
+        <b>Anexar certificado da calibração atual</b> — aqui se registra uma calibração <b>nova</b>.
       </div>` : ''}
       <div class="g2">
         <div class="field full" id="wDataCal">
@@ -593,6 +676,26 @@ function formTornarCalibrado(i, container){
 
           if (!data){ toast('Informe a data da calibração.', 'error'); return; }
           if (data > hojeISO()){ toast('A data da calibração não pode estar no futuro.', 'error'); return; }
+          // Data anterior à vigente não vira a calibração atual: fica
+          // escondida atrás dela e ainda desfaz o standby. O banco recusa
+          // (tg_calibracao_data_proxima); aqui é para recusar ANTES de
+          // subir o PDF, senão ele fica órfão no bucket.
+          if (i.ultima_calibracao && data < i.ultima_calibracao){
+            document.getElementById('wDataCal').classList.add('err');
+            document.getElementById('mDataCal').textContent =
+              `Anterior à última calibração registrada (${fmtData(i.ultima_calibracao)}). ` +
+              'Para anexar o certificado de uma calibração passada, use "Certificado retroativo".';
+            return;
+          }
+          // Mesma data da vigente sem PDF é a MESMA calibração: registrar
+          // de novo só duplicaria a linha no histórico.
+          if (i.calibracao_id && !i.certificado_path && data === i.ultima_calibracao){
+            document.getElementById('wDataCal').classList.add('err');
+            document.getElementById('mDataCal').textContent =
+              `A calibração de ${fmtData(data)} já está registrada, sem certificado. ` +
+              'Use "Anexar certificado da calibração atual".';
+            return;
+          }
           // Calibrado sem certificado é afirmação sem prova. A trava
           // definitiva está na RPC registrar_calibracao; aqui é só para
           // avisar antes de o usuário perder o preenchimento.

@@ -522,7 +522,31 @@ end $$;
 -- Gatilho: data_proxima nunca é escolhida pelo cliente.
 create or replace function public.tg_calibracao_data_proxima()
 returns trigger language plpgsql security definer set search_path = public as $$
+declare
+  v_ultima date;
+  v_tag    text;
 begin
+  -- Calibração VIGENTE fora de ordem. A view de status escolhe a vigente
+  -- pela maior data_calibracao, mas tg_calibracao_reflete_instrumento
+  -- aplica o standby de quem entrou POR ÚLTIMO. Uma calibração nova com
+  -- data anterior à vigente ficava escondida atrás dela e ainda assim
+  -- mexia no standby do instrumento: foi o caso do P-TER-07 — importado
+  -- calibrado em 17/02 com standby, recebeu "Tornar calibrado" com data
+  -- de 03/02, perdeu o standby e passou a aparecer descalibrado, sem
+  -- próxima data. Data anterior à vigente é histórico, e o caminho dele
+  -- é o certificado retroativo. A trava mora no gatilho, e não só na
+  -- RPC, porque o INSERT direto em calibracoes também tem grant.
+  if tg_op = 'INSERT' and not new.retroativo then
+    select max(data_calibracao) into v_ultima
+      from public.calibracoes
+     where instrumento_id = new.instrumento_id and not retroativo;
+    if v_ultima is not null and new.data_calibracao < v_ultima then
+      select tag into v_tag from public.instrumentos where id = new.instrumento_id;
+      raise exception 'A data informada (%) é anterior à última calibração registrada de % (%). Para anexar o certificado de uma calibração passada, use "Certificado retroativo".',
+        to_char(new.data_calibracao,'DD/MM/YYYY'), v_tag, to_char(v_ultima,'DD/MM/YYYY');
+    end if;
+  end if;
+
   -- Certificado retroativo não tem vencimento: o dele já passou, e nada
   -- no sistema deve usar essa data. Calculá-la só encheria a linha do
   -- tempo de um número que parece prazo e não é.
@@ -901,6 +925,162 @@ begin
   ) returning * into v_row;
 
   return v_row;
+end $$;
+
+-- 13.2c Certificado da calibração VIGENTE que entrou sem ele
+--
+-- O acervo importado entrou calibrado, com data, e sem PDF: a planilha
+-- não carrega arquivo. O certificado dessa calibração existe, e não tinha
+-- porta de entrada — "Tornar calibrado" registra calibração NOVA, e o
+-- retroativo é para calibração ANTERIOR. Foi tentando anexar o PDF por
+-- "Tornar calibrado" que o P-TER-07 ficou descalibrado (11_revisao5.sql).
+--
+-- Aqui o arquivo entra na própria linha da calibração vigente, e só nela:
+-- não cria calibração, não recalcula vencimento, não mexe em standby nem
+-- em situação. A função escolhe a vigente pelo mesmo critério da
+-- vw_instrumentos_status, então o PDF vai para a calibração que a tela
+-- está mostrando.
+--
+-- Só PREENCHE, não troca: calibração que já tem certificado tem prova, e
+-- trocar a prova é remover_arquivo (só admin, com justificativa).
+--
+-- Instrumento inativo não é bloqueado, como no retroativo: anexar a prova
+-- de um serviço que já aconteceu não é registrar serviço novo.
+create or replace function public.anexar_certificado_vigente(
+  p_instrumento_id   uuid,
+  p_certificado_path text
+) returns public.calibracoes
+language plpgsql security definer set search_path = public as $$
+declare
+  v_row  public.calibracoes%rowtype;
+  v_tag  text;
+  v_tipo text;
+  v_cert text := nullif(btrim(coalesce(p_certificado_path,'')),'');
+begin
+  if not public.sou_ativo() then raise exception 'Usuário sem permissão.'; end if;
+
+  select tag, tipo into v_tag, v_tipo from public.instrumentos where id = p_instrumento_id;
+  if v_tag is null then raise exception 'Instrumento não encontrado.'; end if;
+  if v_tipo = 'REFERENCIA' then
+    raise exception 'O instrumento % é padrão de referência e não tem calibração controlada aqui.', v_tag;
+  end if;
+  if v_cert is null then
+    raise exception 'Anexe o certificado em PDF.';
+  end if;
+
+  -- `for update`: dois cliques simultâneos não podem gravar dois PDFs,
+  -- um por cima do outro, sem ninguém perceber.
+  select * into v_row
+    from public.calibracoes
+   where instrumento_id = p_instrumento_id and not retroativo
+   order by data_calibracao desc, criado_em desc
+   limit 1
+   for update;
+
+  if not found then
+    raise exception 'O instrumento % não tem calibração registrada. Use "Tornar calibrado".', v_tag;
+  end if;
+
+  if coalesce(btrim(v_row.certificado_path),'') <> '' then
+    raise exception 'A calibração de % de % já tem certificado. Para trocá-lo, use "Remover/Substituir" na pasta do instrumento (administrador).',
+      v_tag, to_char(v_row.data_calibracao,'DD/MM/YYYY');
+  end if;
+
+  update public.calibracoes set certificado_path = v_cert
+   where id = v_row.id
+   returning * into v_row;
+
+  -- A linha da calibração guarda quem a criou (a importação), não quem
+  -- anexou a prova depois. A trilha é que diz quem e quando.
+  perform public.auditar('instrumentos', p_instrumento_id, 'certificado_anexado',
+    null,
+    'Certificado · calibração de ' || to_char(v_row.data_calibracao,'DD/MM/YYYY')
+      || ' · ' || regexp_replace(v_cert, '^.*/', ''),
+    null);
+
+  return v_row;
+end $$;
+
+-- 13.2d Saída do standby com DATA — o relógio que partiu no passado
+--
+-- O relógio de validade de um instrumento em standby só partia por um
+-- caminho: o primeiro empréstimo, com a data de AGORA. O acervo
+-- importado em standby que já tinha saído para uso antes de entrar no
+-- sistema ficava sem como dizer "saiu do standby em 17/02" — e a tentativa
+-- de dizer isso por "Tornar calibrado" foi o que bagunçou o P-TER-07
+-- (11_revisao5.sql).
+--
+-- Aqui a data é informada e o efeito é exatamente o do empréstimo: liga
+-- data_inicio_relogio e recalcula o vencimento da calibração vigente,
+-- contado a partir da saída (calcular_data_proxima usa a maior entre a
+-- calibração e o relógio). O standby continua true, como continua depois
+-- de um empréstimo — é o par standby + relógio ligado que diz "guardado
+-- sem uso até tal dia".
+--
+-- Data no passado mexe em vencimento, então a justificativa é
+-- obrigatória: de onde veio a data (registro de saída, OS, inventário).
+create or replace function public.registrar_saida_standby(
+  p_instrumento_id uuid,
+  p_data           date,
+  p_justificativa  text
+) returns date
+language plpgsql security definer set search_path = public as $$
+declare
+  i      public.instrumentos%rowtype;
+  v_cal  public.calibracoes%rowtype;
+  v_prox date;
+begin
+  if not public.sou_ativo() then raise exception 'Usuário sem permissão.'; end if;
+  if char_length(btrim(coalesce(p_justificativa,''))) < 10 then
+    raise exception 'Informe a justificativa (mínimo de 10 caracteres): de onde vem a data de saída do standby.';
+  end if;
+
+  select * into i from public.instrumentos where id = p_instrumento_id for update;
+  if not found then raise exception 'Instrumento não encontrado.'; end if;
+  if i.tipo = 'REFERENCIA' then
+    raise exception 'O instrumento % é padrão de referência e não tem relógio de validade.', i.tag;
+  end if;
+  if not i.standby or i.data_inicio_relogio is not null then
+    raise exception 'O instrumento % não está em standby com o relógio parado.', i.tag;
+  end if;
+  if p_data is null then
+    raise exception 'Informe a data em que o instrumento saiu do standby.';
+  end if;
+  if p_data > current_date then
+    raise exception 'A data de saída do standby não pode estar no futuro.';
+  end if;
+
+  select * into v_cal
+    from public.calibracoes
+   where instrumento_id = p_instrumento_id and not retroativo
+   order by data_calibracao desc, criado_em desc
+   limit 1
+   for update;
+  if not found then
+    raise exception 'O instrumento % não tem calibração registrada.', i.tag;
+  end if;
+  if p_data < v_cal.data_calibracao then
+    raise exception 'A saída do standby (%) não pode ser anterior à calibração vigente (%).',
+      to_char(p_data,'DD/MM/YYYY'), to_char(v_cal.data_calibracao,'DD/MM/YYYY');
+  end if;
+
+  -- Meio-dia, e não meia-noite: o banco grava em UTC, e meia-noite UTC
+  -- vira 21h do dia ANTERIOR em Brasília em qualquer tela que mostre a hora.
+  update public.instrumentos
+     set data_inicio_relogio = (p_data + time '12:00')::timestamptz
+   where id = p_instrumento_id;
+
+  -- Mesmo recálculo de registrar_movimentacao. O gatilho da calibração
+  -- não serve aqui: com standby_apos ligado ele grava NULL.
+  v_prox := public.calcular_data_proxima(p_instrumento_id, v_cal.data_calibracao, false);
+  update public.calibracoes set data_proxima = v_prox where id = v_cal.id;
+
+  perform public.auditar('instrumentos', p_instrumento_id, 'data_inicio_relogio', null,
+    'Saída do standby em ' || to_char(p_data,'DD/MM/YYYY')
+      || ' · próxima calibração ' || coalesce(to_char(v_prox,'DD/MM/YYYY'), '—'),
+    btrim(p_justificativa));
+
+  return v_prox;
 end $$;
 
 -- 13.3 Alterar periodicidade (auditada, justificativa obrigatória)

@@ -240,6 +240,13 @@ export const listarCalibracoes = async instrumentoId =>
 export const registrarCalibracao = async (instrumentoId, dados) =>
   ok(await sb.rpc('registrar_calibracao', { p_instrumento_id: instrumentoId, p_dados: dados }));
 
+/** Liga o relógio de validade de um instrumento em standby com a data em
+    que ele saiu para uso. Devolve a nova próxima calibração. */
+export const registrarSaidaStandby = async (instrumentoId, data, justificativa) =>
+  ok(await sb.rpc('registrar_saida_standby', {
+    p_instrumento_id: instrumentoId, p_data: data, p_justificativa: justificativa
+  }));
+
 /* ===================================================================
    MOVIMENTAÇÕES
    =================================================================== */
@@ -402,6 +409,16 @@ export async function registrarCertificadoRetroativo(instrumentoId, tag, arquivo
     p_data:             data,
     p_certificado_path: caminho,
     p_obs:              observacao || null
+  }));
+}
+
+/** Certificado da calibração vigente que entrou sem ele (acervo importado).
+    Não cria calibração: só preenche o PDF da linha que a ficha mostra. */
+export async function anexarCertificadoVigente(instrumentoId, tag, arquivo){
+  const caminho = await enviarArquivo(CONFIG.BUCKETS.certificados, arquivo, pastaDoInstrumento(tag));
+  return ok(await sb.rpc('anexar_certificado_vigente', {
+    p_instrumento_id:   instrumentoId,
+    p_certificado_path: caminho
   }));
 }
 

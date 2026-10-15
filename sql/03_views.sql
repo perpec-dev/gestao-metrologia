@@ -315,6 +315,11 @@ union all
            when 'arquivo_removido'    then 'Arquivo removido'
            when 'arquivo_substituido' then 'Arquivo substituído'
            when 'apagado'             then 'Instrumento apagado'
+           -- Correção manual de calibração registrada fora de ordem
+           -- (11_revisao5.sql).
+           when 'calibracao_corrigida' then 'Calibração corrigida'
+           when 'certificado_anexado'  then 'Certificado anexado à calibração'
+           when 'data_inicio_relogio'  then 'Saída do standby registrada'
            -- Correção de dado cadastral, por atualizar_dados_instrumento.
            when 'descricao'           then 'Descrição alterada'
            when 'fabricante'          then 'Fabricante alterado'

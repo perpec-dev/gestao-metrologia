@@ -121,6 +121,12 @@ grant execute on function public.registrar_calibracao(uuid,jsonb) to authenticat
 -- acha o PDF na pasta é quem sobe. A linha entra marcada como retroativa
 -- e não mexe em situação nem em vencimento — a regra vive na função.
 grant execute on function public.registrar_certificado_retroativo(uuid,date,text,text) to authenticated;
+-- Mesmo raciocínio: o PDF da calibração importada está com quem trabalha
+-- o acervo. A função só preenche certificado vazio; trocar é remover_arquivo.
+grant execute on function public.anexar_certificado_vigente(uuid,text) to authenticated;
+-- Saída do standby com data: o mesmo efeito do primeiro empréstimo, que já
+-- é do metrologista. Justificativa obrigatória dentro da função.
+grant execute on function public.registrar_saida_standby(uuid,date,text) to authenticated;
 grant execute on function public.alterar_periodicidade(uuid,int,boolean,jsonb,text) to authenticated;
 -- Corrigir dado cadastral é trabalho de metrologista: quem lê o número de
 -- série errado na bancada é quem corrige. A lista branca de colunas e a

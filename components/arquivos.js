@@ -19,7 +19,7 @@
 import { esc, fmtDT, fmtData, hojeISO, htmlVazio, toast, msgErro } from '../utils.js';
 import { listarArquivosInstrumento, removerArquivo, enviarArquivo,
          anexarFotoInstrumento, registrarCertificadoRetroativo,
-         pastaDoInstrumento } from '../supabase.js';
+         anexarCertificadoVigente, pastaDoInstrumento } from '../supabase.js';
 import { ligarArquivos } from './timeline.js';
 import { abrirModal } from './modal.js';
 import { souAdmin } from '../auth.js';
@@ -420,6 +420,110 @@ export function ligarCertificadoRetroativo(raiz, aoConcluir){
     modalCertificadoRetroativo({ id:b.dataset.certRetro, tag:b.dataset.tag,
                                  descricao:b.dataset.desc,
                                  ultima_calibracao:b.dataset.ultima || null }, aoConcluir);
+  }));
+}
+
+/* ---------------------------------------------------------------------
+   CERTIFICADO DA CALIBRAÇÃO ATUAL — a prova que a importação não trouxe
+
+   O instrumento importado como calibrado tem a calibração com data e sem
+   PDF. Anexar o certificado dela por "Tornar calibrado" registrava uma
+   calibração NOVA — com a data errada, escondia-se atrás da vigente e
+   desfazia o standby (o caso P-TER-07). Aqui o PDF entra na própria
+   linha da calibração que a ficha mostra, e nada mais muda.
+
+   A pergunta que importa é "este PDF é desta calibração?". Por isso a
+   data dela fica escrita na tela e a confirmação é explícita: se a data
+   do certificado for outra, o caminho certo também é outro.
+   --------------------------------------------------------------------- */
+export function modalCertificadoVigente(instr, aoConcluir){
+  const data = fmtData(instr.ultima_calibracao);
+
+  abrirModal({
+    titulo: `Anexar certificado — ${instr.tag}`,
+    fecharFora: false,
+    corpo: `
+      <p style="font-size:13.5px;color:var(--text2);margin:0 0 14px">
+        ${esc(instr.descricao || '')}</p>
+
+      <!-- 'fixa': é a regra da tela, e o desvio dela é exatamente o
+           engano que esta tela existe para evitar. -->
+      <div class="warn-box i fixa">
+        O certificado será vinculado à calibração de <b>${esc(data)}</b>, a calibração
+        atual deste instrumento. Situação, vencimento e standby <b>não mudam</b>.<br>
+        Confira a data no PDF antes de enviar:
+        <b>mais antiga</b> — use <b>Certificado retroativo</b>;
+        <b>mais recente</b> — use <b>Tornar calibrado</b>;
+        <b>${esc(data)} está errada</b> — fale com o administrador antes de anexar.
+      </div>
+
+      <div class="field" id="wCertVig">
+        <label>Certificado em PDF<span class="req">*</span></label>
+        <div class="file" id="dCertVig">
+          <input type="file" id="fCertVig" accept="application/pdf">
+          <div class="txt">Clique ou arraste o certificado aqui</div>
+        </div>
+        <div class="hint">PDF de até ${CONFIG.MAX_MB_PDF} MB.</div>
+        <div class="msg" id="mCertVig"></div>
+      </div>
+
+      <div class="field field-inline" id="wConfVig" style="margin-top:12px">
+        <input type="checkbox" id="fConfVig">
+        <label for="fConfVig">Conferi: a data no certificado é <b>${esc(data)}</b>.</label>
+      </div>`,
+    acoes: [
+      { rotulo:'Cancelar', classe:'btn-outline', onClick: f => f() },
+      { rotulo:'Anexar certificado', classe:'btn-green', onClick: async (fechar, bt) => {
+          const pdf = document.getElementById('fCertVig').files[0] || null;
+          if (!pdf){
+            document.getElementById('wCertVig').classList.add('err');
+            document.getElementById('mCertVig').textContent = 'Anexe o certificado em PDF.';
+            return;
+          }
+          if (!document.getElementById('fConfVig').checked){
+            toast(`Confirme que o certificado é da calibração de ${data}.`, 'error');
+            return;
+          }
+
+          bt.disabled = true; bt.textContent = 'Enviando…';
+          try {
+            await anexarCertificadoVigente(instr.id, instr.tag, pdf);
+            fechar();
+            toast(`Certificado anexado à calibração de ${data}.`, 'success');
+            if (aoConcluir) aoConcluir();
+          } catch (e){
+            toast(msgErro(e), 'error');
+            bt.disabled = false; bt.textContent = 'Anexar certificado';
+          }
+      } }
+    ],
+    aoAbrir: body => {
+      const inp = body.querySelector('#fCertVig');
+      inp.addEventListener('change', () => {
+        const caixa = inp.closest('.file'), a = inp.files[0];
+        caixa.classList.toggle('ok', !!a);
+        caixa.querySelector('.txt').textContent = a ? a.name : 'Clique ou arraste o certificado aqui';
+      });
+    }
+  });
+}
+
+/** Botão "Anexar certificado" — só existe quando a calibração atual não
+    tem PDF; com PDF, trocar é remoção auditada, e não este caminho. */
+export const htmlBotaoCertificadoVigente = (instr, rotulo = 'Anexar certificado da calibração atual') =>
+  instr.tipo === 'TMMDE' && instr.calibracao_id && !instr.certificado_path ? `
+  <button class="btn btn-outline btn-sm" data-cert-vig="${esc(instr.id)}"
+          data-tag="${esc(instr.tag)}" data-desc="${esc(instr.descricao || '')}"
+          data-ultima="${esc(instr.ultima_calibracao || '')}"
+          title="Anexar o PDF da calibração atual, que foi registrada sem certificado">${esc(rotulo)}</button>` : '';
+
+/** Liga os botões "Anexar certificado da calibração atual" de uma tela já desenhada. */
+export function ligarCertificadoVigente(raiz, aoConcluir){
+  raiz.querySelectorAll('[data-cert-vig]').forEach(b => b.addEventListener('click', e => {
+    e.preventDefault(); e.stopPropagation();
+    modalCertificadoVigente({ id:b.dataset.certVig, tag:b.dataset.tag,
+                              descricao:b.dataset.desc,
+                              ultima_calibracao:b.dataset.ultima || null }, aoConcluir);
   }));
 }
 
