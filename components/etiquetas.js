@@ -4,34 +4,48 @@
    Três coisas moram aqui, e nenhuma delas fala com o banco:
      1. O CONTEÚDO de cada etiqueta, a partir de uma linha de
         vw_instrumentos_status (regras do documento "Gerador de etiquetas").
-     2. A DISTRIBUIÇÃO das etiquetas nas folhas de 104 × 50,8 mm,
-        respeitando margens e a área não imprimível do canto.
+     2. A DISTRIBUIÇÃO nas folhas da etiquetadora: posições FIXAS, até 7
+        por folha, no arranjo do modelo aprovado pela metrologia.
      3. O DESENHO e a impressão — HTML em milímetros, impresso por um
         iframe com @page do tamanho exato da folha.
 
-   Medidas da folha e das etiquetas ficam em FOLHA e TAMANHO, logo
-   abaixo: trocar o rolo de etiqueta é mudar números aqui, não código.
+   Medidas da folha, das etiquetas e as posições ficam em FOLHA, TAMANHO
+   e POSICOES, logo abaixo: trocar o rolo é mudar números aqui.
    ===================================================================== */
 import { esc, p2 } from '../utils.js';
 
 /* ---- Medidas, em milímetros ----------------------------------------
-   Folha em paisagem (largura > altura). A área proibida é medida a partir
-   do canto superior esquerdo da FOLHA, não da margem: com 1 cm de margem
-   superior, ela ainda bloqueia os 2 mm de cima à esquerda (40 mm). */
-export const FOLHA = {
-  largura: 104, altura: 50.8,
-  margem: { sup: 10, inf: 5, esq: 0, dir: 0 },
-  proibida: { x: 0, y: 0, largura: 40, altura: 12 },
-  espaco: 0          // entre etiquetas vizinhas
-};
+   A folha e as posições foram medidas no modelo aprovado (imagem de
+   referência da metrologia, 104 mm de largura): três colunas por três
+   linhas de etiquetas TMMDE, com as duas primeiras posições da linha de
+   cima vazias — é ali que fica a área que a etiquetadora não imprime.
+   Sem margens: as posições já dizem onde cada etiqueta cai. */
+export const FOLHA = { largura: 104, altura: 72.5 };
 
-/* Paisagem também: as imagens do modelo são mais largas que altas. */
+/* Paisagem, como nas imagens do modelo. */
 export const TAMANHO = {
   TMMDE:      { largura: 30, altura: 20 },
   REFERENCIA: { largura: 40, altura: 15 }
 };
 
-const EPS = 1e-6;
+/* Ordem de preenchimento: de cima para baixo, da esquerda para a direita.
+   TMMDE: exatamente o arranjo do modelo.
+   REFERÊNCIA: o modelo não traz folha de referência; o arranjo segue a
+   mesma ideia — duas colunas por quatro linhas, a posição de cima à
+   esquerda vazia (cairia na área não imprimível), sete etiquetas. */
+export const POSICOES = {
+  TMMDE: [
+                                        { x: 67.6, y:  7.8 },
+    { x: 3.4, y: 29.1 }, { x: 34.7, y: 29.1 }, { x: 67.6, y: 29.1 },
+    { x: 3.4, y: 50.3 }, { x: 34.7, y: 50.3 }, { x: 67.6, y: 50.3 }
+  ],
+  REFERENCIA: [
+                         { x: 51.3, y:  7.8 },
+    { x: 9.8, y: 23.6 }, { x: 51.3, y: 23.6 },
+    { x: 9.8, y: 39.4 }, { x: 51.3, y: 39.4 },
+    { x: 9.8, y: 55.2 }, { x: 51.3, y: 55.2 }
+  ]
+};
 
 /* ==================================================================== */
 /* 1. CONTEÚDO                                                          */
@@ -83,111 +97,50 @@ export function motivoSemEtiqueta(i, hoje){
   return null;
 }
 
-/** 'AAAA-MM-DD' -> 'DD/MM/AAAA'. */
-const dma = iso => iso ? iso.slice(8, 10) + '/' + iso.slice(5, 7) + '/' + iso.slice(0, 4) : '';
+const MESES = ['JAN','FEV','MAR','ABR','MAI','JUN','JUL','AGO','SET','OUT','NOV','DEZ'];
 
-/** Validade em MM/AAAA, como no modelo ("Validade: /"), quando ela cai no
-    último dia do mês — o controle mensal de vencimento. Se não cair, a
-    data inteira: "02/2027" para quem vence em 17/02 prometeria validade
-    até o fim do mês que o instrumento não tem. */
+/** 'AAAA-MM-DD' -> 'DD/MM/AA', como no modelo. */
+export const fmtCalibracao = iso =>
+  iso ? iso.slice(8, 10) + '/' + iso.slice(5, 7) + '/' + iso.slice(2, 4) : '';
+
+/** Validade como no modelo — "ABR/2027" — quando ela cai no último dia
+    do mês, o controle mensal de vencimento. Se não cair, a data inteira:
+    "FEV/2027" para quem vence em 17/02 prometeria validade até o fim do
+    mês, que o instrumento não tem. */
 export function fmtValidade(iso){
   if (!iso) return '';
   const [a, m, d] = iso.slice(0, 10).split('-').map(Number);
   const ultimo = new Date(a, m, 0).getDate();
-  return d === ultimo ? p2(m) + '/' + a : dma(iso);
+  return d === ultimo ? MESES[m - 1] + '/' + a : fmtCalibracao(iso);
 }
 
 /** Uma linha de texto para a lista de seleção. */
 export function resumoEtiqueta(c){
   if (c.tipo === 'REFERENCIA') return 'Só a tag';
   if (c.caso === 'standby') return 'Standby ■ · sem datas';
-  const datas = `Cal. ${dma(c.calibracao)} · Val. ${fmtValidade(c.validade)}`;
+  const datas = `Cal. ${fmtCalibracao(c.calibracao)} · Val. ${fmtValidade(c.validade)}`;
   return c.caso === 'saiu_standby' ? datas + ' · Standby ■' : datas;
 }
 
 /* ==================================================================== */
 /* 2. DISTRIBUIÇÃO NAS FOLHAS                                           */
 /*                                                                      */
-/* Em LINHAS alinhadas, uma classificação por linha: etiqueta impressa  */
-/* em folha lisa é recortada à mão, e linha reta é corte reto. Cada     */
-/* folha testa as combinações possíveis (são poucas: cabem no máximo    */
-/* três linhas) e fica com a que coloca mais etiquetas. Duas partidas   */
-/* são testadas: logo abaixo da área proibida, com a largura toda, ou   */
-/* colada na margem, ao lado dela.                                      */
+/* Uma classificação por folha: as posições de TMMDE e de referência    */
+/* não se encaixam umas nas outras. TMMDE primeiro, depois referência,  */
+/* cada folha preenchida na ordem de POSICOES.                          */
 /* ==================================================================== */
 
-/** Trechos horizontais livres para uma linha que ocupa [y, y+h]. */
-function trechosLivres(y, h){
-  const ini = FOLHA.margem.esq, fim = FOLHA.largura - FOLHA.margem.dir;
-  const p = FOLHA.proibida;
-  const cruza = y < p.y + p.altura - EPS && y + h > p.y + EPS;
-  if (!cruza) return [[ini, fim]];
-  return [[ini, Math.min(fim, p.x)], [Math.max(ini, p.x + p.largura), fim]]
-    .filter(([a, b]) => b - a > EPS);
-}
-
-const cabemNoTrecho = (a, b, w) => Math.floor((b - a + FOLHA.espaco + EPS) / (w + FOLHA.espaco));
-
-function capacidade(y, tipo){
-  const { largura: w, altura: h } = TAMANHO[tipo];
-  return trechosLivres(y, h).reduce((n, [a, b]) => n + cabemNoTrecho(a, b, w), 0);
-}
-
-/** Melhor sequência de linhas a partir de y, para o que ainda falta. */
-function planejar(y, restam){
-  let melhor = { total: 0, linhas: [] };
-  for (const tipo of Object.keys(restam)){
-    if (!restam[tipo]) continue;
-    const h = TAMANHO[tipo].altura;
-    if (y + h > FOLHA.altura - FOLHA.margem.inf + EPS) continue;
-    const n = Math.min(capacidade(y, tipo), restam[tipo]);
-    if (!n) continue;
-    const resto = planejar(y + h + FOLHA.espaco, { ...restam, [tipo]: restam[tipo] - n });
-    if (n + resto.total > melhor.total)
-      melhor = { total: n + resto.total, linhas: [{ y, tipo, n }, ...resto.linhas] };
-  }
-  return melhor;
-}
-
-/** Alturas em que a primeira linha pode começar. A de baixo da área
-    proibida vem primeiro: em empate, a folha fica sem degrau. */
-function partidas(){
-  const p = FOLHA.proibida, abaixo = p.y + p.altura;
-  return [...new Set([abaixo > FOLHA.margem.sup ? abaixo : null, FOLHA.margem.sup].filter(v => v != null))];
-}
-
 /**
- * Conteúdos -> folhas. Cada folha é uma lista de { c, x, y } em mm,
- * medidos do canto superior esquerdo da folha.
+ * Conteúdos -> folhas. Cada folha é { tipo, etiquetas: [{ c, x, y }] },
+ * em mm, medidos do canto superior esquerdo da folha.
  */
 export function distribuir(conteudos){
-  const filas = {
-    TMMDE:      conteudos.filter(c => c.tipo === 'TMMDE'),
-    REFERENCIA: conteudos.filter(c => c.tipo === 'REFERENCIA')
-  };
   const folhas = [];
-
-  while (filas.TMMDE.length || filas.REFERENCIA.length){
-    const restam = { TMMDE: filas.TMMDE.length, REFERENCIA: filas.REFERENCIA.length };
-    let plano = null;
-    for (const y0 of partidas()){
-      const p = planejar(y0, restam);
-      if (!plano || p.total > plano.total) plano = p;
-    }
-    // Sem isto, uma medida errada em TAMANHO viraria laço infinito.
-    if (!plano || !plano.total)
-      throw new Error('A etiqueta não cabe na área imprimível da folha. Confira as medidas em components/etiquetas.js.');
-
-    const etiquetas = [];
-    for (const linha of plano.linhas){
-      const { largura: w, altura: h } = TAMANHO[linha.tipo];
-      let falta = linha.n;
-      for (const [a, b] of trechosLivres(linha.y, h)){
-        for (let k = 0; falta && k < cabemNoTrecho(a, b, w); k++, falta--)
-          etiquetas.push({ c: filas[linha.tipo].shift(), x: a + k * (w + FOLHA.espaco), y: linha.y });
-      }
-    }
-    folhas.push(etiquetas);
+  for (const tipo of ['TMMDE', 'REFERENCIA']){
+    const fila = conteudos.filter(c => c.tipo === tipo);
+    const pos = POSICOES[tipo];
+    for (let i = 0; i < fila.length; i += pos.length)
+      folhas.push({ tipo, etiquetas: fila.slice(i, i + pos.length).map((c, k) => ({ c, ...pos[k] })) });
   }
   return folhas;
 }
@@ -241,13 +194,8 @@ ${cssLogo('.etq-r .etq-logo', 24)}
   color:#fff;font-size:1.75mm;letter-spacing:.03mm;white-space:nowrap}
 .etq-rodape svg{width:2.4mm;height:2.4mm;flex:0 0 auto}
 .etq-barra{width:.25mm;height:2.6mm;background:#fff}
-.etq-guia{position:absolute;pointer-events:none}
-.etq-guia-margem{left:${FOLHA.margem.esq}mm;top:${FOLHA.margem.sup}mm;
-  width:${FOLHA.largura - FOLHA.margem.esq - FOLHA.margem.dir}mm;
-  height:${FOLHA.altura - FOLHA.margem.sup - FOLHA.margem.inf}mm;outline:.2mm dashed #CFC8BF}
-.etq-guia-proibida{left:${FOLHA.proibida.x}mm;top:${FOLHA.proibida.y}mm;
-  width:${FOLHA.proibida.largura}mm;height:${FOLHA.proibida.altura}mm;
-  background:repeating-linear-gradient(45deg,#F1D5D1 0 .6mm,#fff .6mm 1.4mm)}`;
+.etq-vaga{position:absolute;box-sizing:border-box;border:.25mm dashed #CFC8BF;border-radius:1.6mm;
+  pointer-events:none}`;
 }
 
 /** Tamanho da fonte (mm) para o texto caber em `larguraMm`. */
@@ -260,8 +208,10 @@ const htmlLogo = () => window.LOGO_B64
 const CRUZ = `<svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.4">
   <circle cx="12" cy="12" r="8"/><path d="M12 1v22M1 12h22"/></svg>`;
 
+const mm = v => Number(v).toFixed(2) + 'mm';
+
 function htmlEtiqueta(c, x, y){
-  const pos = `left:${x.toFixed(2)}mm;top:${y.toFixed(2)}mm`;
+  const pos = `left:${mm(x)};top:${mm(y)}`;
 
   if (c.tipo === 'REFERENCIA') return `
     <div class="etq etq-r" style="${pos}">
@@ -271,7 +221,7 @@ function htmlEtiqueta(c, x, y){
       <div class="etq-rodape">${CRUZ}<span class="etq-barra"></span>INSTRUMENTO DE REFERÊNCIA</div>
     </div>`;
 
-  const cal = dma(c.calibracao), val = fmtValidade(c.validade);
+  const cal = fmtCalibracao(c.calibracao), val = fmtValidade(c.validade);
   return `
     <div class="etq etq-t" style="${pos}">
       <div class="etq-cab">${htmlLogo()}
@@ -281,29 +231,36 @@ function htmlEtiqueta(c, x, y){
       <div class="etq-linha"><span class="etq-k">TAG:</span>
         <span class="etq-v" style="font-size:${fonte(c.tag, 22, 2.6)}mm">${esc(c.tag)}</span></div>
       <div class="etq-linha"><span class="etq-k">Calibração:</span>
-        <span class="etq-v" style="font-size:${fonte(cal, 16.5, 2.3)}mm">${esc(cal)}</span></div>
+        <span class="etq-v" style="font-size:${fonte(cal, 16.5, 2.4)}mm">${esc(cal)}</span></div>
       <div class="etq-linha"><span class="etq-k">Validade:</span>
-        <span class="etq-v" style="font-size:${fonte(val, 18.5, 2.3)}mm">${esc(val)}</span></div>
+        <span class="etq-v" style="font-size:${fonte(val, 18.5, 2.4)}mm">${esc(val)}</span></div>
     </div>`;
 }
 
 /**
- * Folhas -> HTML. `guias` desenha margens e área proibida (só na prévia).
- * `ajuste` desloca tudo em mm: compensa impressora que puxa o papel torto.
+ * Folhas -> HTML. `guias` desenha as posições vagas (só na prévia: mostra
+ * onde caem as próximas). `ajuste` desloca tudo em mm — compensa a
+ * etiquetadora que puxa o papel um pouco torto.
  */
 export function htmlFolhas(folhas, { guias = false, ajuste = { x: 0, y: 0 } } = {}){
   const desloca = `transform:translate(${Number(ajuste.x) || 0}mm,${Number(ajuste.y) || 0}mm)`;
-  return folhas.map(f => `
-    <div class="etq-folha">
-      ${guias ? '<div class="etq-guia etq-guia-proibida"></div><div class="etq-guia etq-guia-margem"></div>' : ''}
-      <div class="etq-conteudo" style="${desloca}">${f.map(e => htmlEtiqueta(e.c, e.x, e.y)).join('')}</div>
-    </div>`).join('');
+  return folhas.map(f => {
+    const { largura, altura } = TAMANHO[f.tipo];
+    const vagas = guias ? POSICOES[f.tipo].slice(f.etiquetas.length).map(p =>
+      `<div class="etq-vaga" style="left:${mm(p.x)};top:${mm(p.y)};width:${mm(largura)};height:${mm(altura)}"></div>`
+    ).join('') : '';
+    return `
+      <div class="etq-folha">
+        <div class="etq-conteudo" style="${desloca}">${vagas}${
+          f.etiquetas.map(e => htmlEtiqueta(e.c, e.x, e.y)).join('')}</div>
+      </div>`;
+  }).join('');
 }
 
 /**
  * Imprime por um iframe invisível: a página de impressão tem @page do
  * tamanho exato da folha e margem zero (o que também some com cabeçalho
- * e rodapé do navegador). As margens do documento estão no desenho.
+ * e rodapé do navegador).
  */
 export async function imprimirEtiquetas(folhas, ajuste){
   const ifr = document.createElement('iframe');
