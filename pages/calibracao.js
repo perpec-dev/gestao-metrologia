@@ -248,6 +248,7 @@ export async function abrirDetalhe(id, container){
              arquivos e empréstimos. Tag, família, classificação e data de
              entrada continuam sem conserto — são a identidade. -->
         <button class="btn btn-outline btn-sm" id="btEditar">Editar dados</button>
+        ${inativo ? '' : `<button class="btn btn-outline btn-sm" id="btEtiqueta">Etiqueta</button>`}
         ${i.certificado_path
           ? `<button class="btn btn-outline btn-sm" id="btCert">Abrir último certificado</button>` : ''}
       </div>
@@ -329,6 +330,11 @@ export async function abrirDetalhe(id, container){
       // com os dados novos e a alteração já no histórico.
       const btEd = body.querySelector('#btEditar');
       if (btEd) btEd.addEventListener('click', () => modalEditarInstrumento(i, repintarFicha));
+
+      // A tela de etiquetas abre com este instrumento marcado. Se ele não
+      // puder receber etiqueta (vencido, descalibrado), ela diz por quê.
+      const btEtq = body.querySelector('#btEtiqueta');
+      if (btEtq) btEtq.addEventListener('click', () => { fecharModal(); irPara('etiquetas', i.id); });
 
       const btEmp = body.querySelector('#btEmprestar');
       if (btEmp) btEmp.addEventListener('click', () => { fecharModal(); irPara('emprestimo', i.id); });

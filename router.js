@@ -26,6 +26,8 @@ export const TELAS = [
     icone:'<path d="M9 3h6l1 4H8l1-4ZM4 7h16v14H4zM9 12h6"/>' },
   { id:'arquivos',    rotulo:'Arquivos',    arquivo:'./pages/arquivos.js',
     icone:'<path d="M4 20V6a2 2 0 0 1 2-2h3.5l2 3H18a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z"/>' },
+  { id:'etiquetas',   rotulo:'Etiquetas',   arquivo:'./pages/etiquetas.js',
+    icone:'<path d="M20.6 13.4 13.4 20.6a2 2 0 0 1-2.8 0L2 12V2h10l8.6 8.6a2 2 0 0 1 0 2.8ZM7 7h.01"/>' },
   { id:'relatorios',  rotulo:'Relatórios',  arquivo:'./pages/relatorios.js',
     icone:'<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6ZM14 2v6h6M8 13h8M8 17h5"/>' },
   { id:'admin',       rotulo:'Administração', arquivo:'./pages/admin.js', soAdmin:true,
