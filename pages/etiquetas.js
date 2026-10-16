@@ -46,14 +46,46 @@ export async function render(container, params = []){
       <b>${String(FOLHA.largura).replace('.', ',')} × ${String(FOLHA.altura).replace('.', ',')} mm</b>,
       margens <b>Nenhuma</b> e escala <b>100%</b>. Se a impressão sair deslocada, corrija em
       <b>Ajuste fino</b> — o valor fica guardado neste computador.<br>
-      A etiqueta só sai para instrumento com calibração válida: TMMDE em standby sai só com a
-      tag e o quadrado cheio; o que já saiu do standby leva a data de saída como calibração.
+      Até 7 etiquetas por folha, nas posições do modelo. A etiqueta só sai para instrumento com
+      calibração válida: TMMDE em standby sai só com a tag e o quadrado cheio; o que já saiu do
+      standby leva a data de saída como calibração.
+    </div>
+
+    <!-- A prévia vem primeiro: é o que se confere antes de gastar etiqueta.
+         A lista, longa, pode ser recolhida depois de escolhida. -->
+    <div class="card">
+      <div class="card-head"><span class="step">1</span><h2>Prévia de impressão</h2>
+        <span class="right" id="contFolhas"></span></div>
+      <div class="card-body">
+        <p style="font-size:12.5px;color:var(--muted);margin:0 0 12px">
+          Tracejado: posições ainda vagas na folha. Não sai no papel.</p>
+        <div id="previaEtq"></div>
+      </div>
+    </div>
+
+    <div class="act-bar">
+      <div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap">
+        <div class="field" style="width:120px">
+          <label for="fAjX">Ajuste fino → (mm)</label>
+          <input type="number" id="fAjX" step="0.5" min="-10" max="10" value="${esc(ajuste.x)}">
+        </div>
+        <div class="field" style="width:120px">
+          <label for="fAjY">Ajuste fino ↓ (mm)</label>
+          <input type="number" id="fAjY" step="0.5" min="-10" max="10" value="${esc(ajuste.y)}">
+        </div>
+      </div>
+      <div class="act-group">
+        <button class="btn btn-red" id="btImprimir" style="min-width:220px" disabled>IMPRIMIR ETIQUETAS</button>
+      </div>
     </div>
 
     <div class="card">
-      <div class="card-head"><span class="step">1</span><h2>Instrumentos</h2>
-        <span class="right" id="contSel"></span></div>
-      <div class="card-body">
+      <div class="card-head"><span class="step">2</span><h2>Instrumentos</h2>
+        <span class="right" style="display:flex;align-items:center;gap:12px">
+          <span id="contSel"></span>
+          <button class="btn btn-outline btn-sm" id="btRecolher" aria-controls="corpoLista"></button>
+        </span></div>
+      <div class="card-body" id="corpoLista">
         <div class="filtros">
           <div class="field busca">
             <label for="fBusca">Buscar</label>
@@ -89,34 +121,22 @@ export async function render(container, params = []){
         </div>
         <div id="listaEtq">${htmlCarregando()}</div>
       </div>
-    </div>
-
-    <div class="act-bar">
-      <div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap">
-        <div class="field" style="width:120px">
-          <label for="fAjX">Ajuste fino → (mm)</label>
-          <input type="number" id="fAjX" step="0.5" min="-10" max="10" value="${esc(ajuste.x)}">
-        </div>
-        <div class="field" style="width:120px">
-          <label for="fAjY">Ajuste fino ↓ (mm)</label>
-          <input type="number" id="fAjY" step="0.5" min="-10" max="10" value="${esc(ajuste.y)}">
-        </div>
-      </div>
-      <div class="act-group">
-        <button class="btn btn-red" id="btImprimir" style="min-width:220px" disabled>IMPRIMIR ETIQUETAS</button>
-      </div>
-    </div>
-
-    <div class="card">
-      <div class="card-head"><span class="step">2</span><h2>Prévia</h2>
-        <span class="right" id="contFolhas"></span></div>
-      <div class="card-body">
-        <p style="font-size:12.5px;color:var(--muted);margin:0 0 12px">
-          Tracejado: margens da folha. Hachurado: área que não pode ser impressa.
-          Nada disso sai no papel.</p>
-        <div id="previaEtq"></div>
-      </div>
     </div>`;
+
+  // Recolhida ou aberta, a lista fica como a pessoa deixou da última vez.
+  // Vindo da ficha, abre: o instrumento pedido precisa estar à vista.
+  const recolher = recolhida => {
+    container.querySelector('#corpoLista').hidden = recolhida;
+    const bt = container.querySelector('#btRecolher');
+    bt.textContent = recolhida ? 'Mostrar lista' : 'Recolher lista';
+    bt.setAttribute('aria-expanded', String(!recolhida));
+  };
+  recolher(params[0] ? false : !!lembrado('etiquetas.listaRecolhida', false));
+  container.querySelector('#btRecolher').addEventListener('click', () => {
+    const recolhida = !container.querySelector('#corpoLista').hidden;
+    lembrar('etiquetas.listaRecolhida', recolhida);
+    recolher(recolhida);
+  });
 
   const familias = await listarFamilias();
   const selFam = container.querySelector('#fFamilia');
@@ -276,7 +296,7 @@ function previa(container){
     cont.textContent = '';
     return;
   }
-  const n = folhas.reduce((s, f) => s + f.length, 0);
+  const n = folhas.reduce((s, f) => s + f.etiquetas.length, 0);
   cont.textContent = `${n} etiqueta${n > 1 ? 's' : ''} · ${folhas.length} folha${folhas.length > 1 ? 's' : ''}`;
   alvo.innerHTML = `<div class="etq-previa">${htmlFolhas(folhas, { guias:true, ajuste })}</div>`;
 }
